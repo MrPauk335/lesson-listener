@@ -7,10 +7,32 @@ Lesson Listener — розумний AI-суфлер для онлайн-уро�
 """
 import datetime
 import logging
+import os
 import re
+import shutil
 import sys
+import tempfile
 import threading
 import time
+import atexit
+
+_SMOKE_TEST_DATA_DIR = None
+if "--smoke-test" in sys.argv and not os.environ.get("LESSON_LISTENER_DATA_DIR"):
+    _SMOKE_TEST_DATA_DIR = tempfile.mkdtemp(prefix="lesson-listener-smoke-")
+    os.environ["LESSON_LISTENER_DATA_DIR"] = _SMOKE_TEST_DATA_DIR
+
+    def _cleanup_smoke_test_data():
+        import logging
+
+        for handler in logging.getLogger().handlers:
+            if isinstance(handler, logging.FileHandler):
+                try:
+                    handler.close()
+                except Exception:
+                    pass
+        shutil.rmtree(_SMOKE_TEST_DATA_DIR, ignore_errors=True)
+
+    atexit.register(_cleanup_smoke_test_data)
 
 import numpy as np
 from PySide6.QtCore import (QBuffer, QByteArray, QEasingCurve, QIODevice, QObject, QPoint, QPropertyAnimation,
@@ -1217,6 +1239,9 @@ class SettingsPanel(QDialog):
         self.tg_top = self._toggle_row(c2, "Віджет поверх усіх вікон", "topmost")
         self.tg_autostart = self._toggle_row(c2, "Автозапуск при старті Windows (тихий запуск у трей)", "autostart", default=True)
         self.tg_autostart.toggled.connect(lambda v: set_windows_autostart(bool(v)))
+        if sys.platform != "win32":
+            self.tg_autostart.setEnabled(False)
+            self.tg_autostart.setToolTip("Автозапуск через меню Windows доступний лише у Windows.")
         self.tg_recess = self._toggle_row(c2, "Режим перерви (пауза звуку й ШІ на зміні)", "recess_dummy")
         self.tg_recess.toggled.connect(lambda on: c.toggle_recess(bool(on)))
         srow = QHBoxLayout()
@@ -1247,6 +1272,8 @@ class SettingsPanel(QDialog):
         btn_start_menu.setObjectName("Soft")
         btn_start_menu.setToolTip("Створює ярлик у меню Пуск Windows для запуску та закріплення на плитках")
         btn_start_menu.clicked.connect(lambda *_: self._on_recreate_shortcut())
+        if sys.platform != "win32":
+            btn_start_menu.hide()
         c2.addWidget(btn_start_menu)
         v.addWidget(card2)
 
@@ -1284,6 +1311,8 @@ class SettingsPanel(QDialog):
         btn_route.setObjectName("Soft")
         btn_route.setToolTip("Відкриває системні налаштування виводу додатків Windows для 100% ізоляції від Discord")
         btn_route.clicked.connect(lambda *_: open_windows_sound_routing())
+        if sys.platform != "win32":
+            btn_route.hide()
         v.addWidget(btn_route)
 
         v.addStretch(1)
@@ -1412,14 +1441,15 @@ class SettingsPanel(QDialog):
 #  Контролер застосунку (логіка + трей)
 # ======================================================================
 class LessonListenerApp(QObject):
-    def __init__(self, show: bool = True, audio: bool = True):
+    def __init__(self, show: bool = True, audio: bool = True, smoke_test: bool = False):
         super().__init__()
+        self.smoke_test = bool(smoke_test)
         self.cfg = load_config()
         self.audio_enabled = audio
         self.prof_mgr = ProfileManager()
         self.active_profile = self.prof_mgr.get(self.cfg.get("active_subject", "algebra"))
         self.context = LessonContext(self.active_profile)
-        self.rec = UniversalRecorder()
+        self.rec = UniversalRecorder(enabled=audio)
         self.gemini = GeminiEngine(self.cfg)
         self.gemini.thinking = self.cfg.get("thinking_level") or None
         self.busy = False
@@ -1427,6 +1457,9 @@ class LessonListenerApp(QObject):
         self.bg_active = True
         self.sources = []
         self.current_source_idx = -1
+        self._keyboard = None
+        self._global_hotkey_handles = []
+        self._local_shortcuts = []
         self.panel = None
         self.tray = None
         self._down = False
@@ -1462,13 +1495,15 @@ class LessonListenerApp(QObject):
         self._opened_meets_today = set()
         self._spoken_lessons_today = set()
         # Ярлики створюються через COM/PowerShell (до кількох секунд) — не блокуємо старт вікна
-        threading.Thread(target=self._ensure_shortcuts, daemon=True).start()
+        if sys.platform == "win32" and not self.smoke_test:
+            threading.Thread(target=self._ensure_shortcuts, daemon=True).start()
 
         self._sched_timer = QTimer(self)
-        self._sched_timer.setInterval(5000)
-        self._sched_timer.timeout.connect(self._check_schedule_tick)
-        self._sched_timer.start()
-        QTimer.singleShot(1000, self._check_schedule_tick)
+        if not self.smoke_test:
+            self._sched_timer.setInterval(5000)
+            self._sched_timer.timeout.connect(self._check_schedule_tick)
+            self._sched_timer.start()
+            QTimer.singleShot(1000, self._check_schedule_tick)
 
         self.level_timer = QTimer(self)
         self.level_timer.setInterval(80)
@@ -1490,6 +1525,8 @@ class LessonListenerApp(QObject):
         self._save_timer.start()
 
     def _ensure_shortcuts(self):
+        if sys.platform != "win32":
+            return
         com = None
         try:
             import pythoncom
@@ -1599,6 +1636,8 @@ class LessonListenerApp(QObject):
                                       QSystemTrayIcon.MessageIcon.Information, 2500)
 
     def _check_schedule_tick(self):
+        if self.smoke_test:
+            return
         if not hasattr(self, "schedule_mgr") or not self.schedule_mgr.data.get("enabled", True):
             return
 
@@ -1856,16 +1895,33 @@ class LessonListenerApp(QObject):
     # ------------------------------------------------------------ звук
     def setup_hotkey(self):
         ok = False
-        try:
-            import keyboard
-            keyboard.add_hotkey(HOTKEY, self.bridge.hotkey.emit)
-            keyboard.add_hotkey("F9", self.bridge.snip_hotkey.emit)
-            ok = True
-        except Exception as e:
-            logging.warning(f"Глобальну гарячу клавішу не вдалося зареєструвати: {e}")
+        if sys.platform == "win32":
+            try:
+                import keyboard
+                self._keyboard = keyboard
+                self._global_hotkey_handles.append(keyboard.add_hotkey(HOTKEY, self.bridge.hotkey.emit))
+                self._global_hotkey_handles.append(keyboard.add_hotkey("F9", self.bridge.snip_hotkey.emit))
+                ok = True
+            except Exception as e:
+                logging.warning(f"Глобальну гарячу клавішу не вдалося зареєструвати: {e}")
+                self._remove_global_hotkeys()
         if not ok:
-            QShortcut(QKeySequence(HOTKEY.upper()), self.widget).activated.connect(self.on_trigger_answer)
-            QShortcut(QKeySequence("F9"), self.widget).activated.connect(self.start_screen_snip)
+            for sequence, handler in ((HOTKEY.upper(), self.on_trigger_answer),
+                                      ("F9", self.start_screen_snip)):
+                shortcut = QShortcut(QKeySequence(sequence), self.widget)
+                shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+                shortcut.activated.connect(handler)
+                self._local_shortcuts.append(shortcut)
+
+    def _remove_global_hotkeys(self):
+        if self._keyboard is not None:
+            for handle in self._global_hotkey_handles:
+                try:
+                    self._keyboard.remove_hotkey(handle)
+                except Exception:
+                    pass
+        self._global_hotkey_handles = []
+        self._keyboard = None
 
     def _init_audio(self):
         self.refresh_sources()
@@ -1886,7 +1942,7 @@ class LessonListenerApp(QObject):
             self.sources = []
         cur_name = self.cfg.get("audio_device", "")
         self.current_source_idx = next((i for i, (n, _) in enumerate(self.sources) if n == cur_name), -1) \
-            if self.rec.pa_stream is not None or self.rec.proctap_stream is not None else -1
+            if self.rec.pa_stream is not None or self.rec.sd_stream is not None or self.rec.proctap_stream is not None else -1
         if self.panel is not None:
             self.panel.refresh_devices()
 
@@ -2439,15 +2495,10 @@ class LessonListenerApp(QObject):
         except Exception:
             pass
         try:
-            self.rec.stop()
+            self.rec.close()
         except Exception:
             pass
-        if self.audio_enabled:
-            try:
-                import keyboard
-                keyboard.unhook_all()
-            except Exception:
-                pass
+        self._remove_global_hotkeys()
         try:
             if self.tray is not None:
                 self.tray.hide()
@@ -2468,7 +2519,15 @@ class LessonListenerApp(QObject):
 
 
 def main():
-    app = QApplication(sys.argv)
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Lesson Listener")
+    parser.add_argument("--tray", action="store_true", help="Start hidden in the system tray")
+    parser.add_argument("--no-audio", action="store_true", help="Start without initializing audio capture")
+    parser.add_argument("--smoke-test", action="store_true", help="Launch briefly with isolated data and no audio")
+    args, _ = parser.parse_known_args()
+
+    app = QApplication([sys.argv[0]])
     app.setQuitOnLastWindowClosed(False)  # живемо в треї, поки не натиснуть «Вийти»
     app.setApplicationName("Lesson Listener")
     app.setStyle("Fusion")
@@ -2478,8 +2537,11 @@ def main():
         pass
     app.setStyleSheet(T.build_stylesheet())
     app.setWindowIcon(T.app_icon())
-    ctrl = LessonListenerApp(show="--tray" not in sys.argv)
+    ctrl = LessonListenerApp(show=not args.tray, audio=not (args.no_audio or args.smoke_test),
+                             smoke_test=args.smoke_test)
     app.aboutToQuit.connect(ctrl.shutdown)
+    if args.smoke_test:
+        QTimer.singleShot(2500, ctrl.quit_app)
     sys.exit(app.exec())
 
 
