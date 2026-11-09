@@ -113,6 +113,8 @@ DEFAULT_CONFIG = {
     "audio_category": "browser",
     "language": "auto",    # auto / ru / uk
     "proxy": "",           # HTTP/SOCKS5 прокси для обхода блокировок Gemini в РФ
+    "speak_lesson_start": True,  # Озвучивать голосом начало урока, предмет и время
+    "autostart": True,           # Автозапуск при старте Windows
 }
 
 LESSON_APP_EXES = {
@@ -462,6 +464,148 @@ def open_lesson_link(url: str, chrome_profile: str = None) -> bool:
         return False
 
 
+def speak_text(text: str, lang: str = "ru"):
+    """Озвучує текст через Windows SAPI або PowerShell SpeechSynthesizer у фоновому потоці."""
+    if not text:
+        return
+
+    def _worker():
+        try:
+            import pythoncom
+            import win32com.client
+            pythoncom.CoInitialize()
+            try:
+                sp = win32com.client.Dispatch("SAPI.SpVoice")
+                target_voice = None
+                for v in sp.GetVoices():
+                    desc = v.GetDescription().lower()
+                    if lang in ("ru", "auto") and ("irina" in desc or "russian" in desc):
+                        target_voice = v
+                        break
+                    elif lang == "uk" and ("ukrain" in desc or "polina" in desc or "ostap" in desc):
+                        target_voice = v
+                        break
+                if target_voice:
+                    sp.Voice = target_voice
+                sp.Rate = 1
+                sp.Speak(text)
+                return
+            finally:
+                pythoncom.CoUninitialize()
+        except Exception as e:
+            logging.debug(f"SAPI voice error: {e}")
+
+        try:
+            clean_t = text.replace('"', ' ').replace("'", " ")
+            cmd = f"Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('{clean_t}')"
+            subprocess.run(["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", cmd],
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=10)
+        except Exception as e:
+            logging.warning(f"PowerShell TTS error: {e}")
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def get_start_menu_shortcut_path() -> str:
+    appdata = os.environ.get("APPDATA", "")
+    return os.path.join(appdata, r"Microsoft\Windows\Start Menu\Programs\Lesson Listener.lnk")
+
+
+def get_startup_shortcut_path() -> str:
+    appdata = os.environ.get("APPDATA", "")
+    return os.path.join(appdata, r"Microsoft\Windows\Start Menu\Programs\Startup\Lesson Listener.lnk")
+
+
+def create_windows_shortcut(shortcut_path: str, target: str, arguments: str = "",
+                            work_dir: str = "", icon_path: str = "", description: str = "") -> bool:
+    try:
+        os.makedirs(os.path.dirname(shortcut_path), exist_ok=True)
+        import win32com.client
+        shell = win32com.client.Dispatch("WScript.Shell")
+        s = shell.CreateShortcut(shortcut_path)
+        s.TargetPath = target
+        s.Arguments = arguments
+        s.WorkingDirectory = work_dir
+        if icon_path and os.path.isfile(icon_path):
+            s.IconLocation = icon_path
+        if description:
+            s.Description = description
+        s.Save()
+        return True
+    except Exception as e:
+        logging.warning(f"Помилка створення ярлика через COM: {e}")
+        try:
+            esc_target = target.replace('"', '`"')
+            esc_args = arguments.replace('"', '`"')
+            esc_dir = work_dir.replace('"', '`"')
+            esc_icon = icon_path.replace('"', '`"')
+            cmd = (
+                f"$ws = New-Object -ComObject WScript.Shell; "
+                f"$s = $ws.CreateShortcut('{shortcut_path}'); "
+                f"$s.TargetPath = '{esc_target}'; "
+                f"$s.Arguments = '{esc_args}'; "
+                f"$s.WorkingDirectory = '{esc_dir}'; "
+            )
+            if icon_path and os.path.isfile(icon_path):
+                cmd += f"$s.IconLocation = '{esc_icon}'; "
+            if description:
+                cmd += f"$s.Description = '{description}'; "
+            cmd += "$s.Save()"
+            res = subprocess.run(["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", cmd],
+                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=8)
+            return res.returncode == 0
+        except Exception as e2:
+            logging.error(f"Помилка створення ярлика через PowerShell: {e2}")
+            return False
+
+
+def is_windows_autostart_enabled() -> bool:
+    return os.path.isfile(get_startup_shortcut_path())
+
+
+def set_windows_autostart(enabled: bool) -> bool:
+    startup_path = get_startup_shortcut_path()
+    if enabled:
+        py_exe = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+        if not os.path.isfile(py_exe):
+            py_exe = sys.executable
+        app_py = os.path.join(BASE_DIR, "app.py")
+        icon = os.path.join(BASE_DIR, "icon.ico")
+        return create_windows_shortcut(
+            shortcut_path=startup_path,
+            target=py_exe,
+            arguments=f'"{app_py}" --tray',
+            work_dir=BASE_DIR,
+            icon_path=icon,
+            description="Lesson Listener AutoStart"
+        )
+    else:
+        try:
+            if os.path.isfile(startup_path):
+                os.remove(startup_path)
+            return True
+        except Exception as e:
+            logging.error(f"Помилка видалення ярлика автозапуску: {e}")
+            return False
+
+
+def ensure_start_menu_shortcut() -> bool:
+    lnk_path = get_start_menu_shortcut_path()
+    py_exe = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+    if not os.path.isfile(py_exe):
+        py_exe = sys.executable
+    app_py = os.path.join(BASE_DIR, "app.py")
+    icon = os.path.join(BASE_DIR, "icon.ico")
+    return create_windows_shortcut(
+        shortcut_path=lnk_path,
+        target=py_exe,
+        arguments=f'"{app_py}"',
+        work_dir=BASE_DIR,
+        icon_path=icon,
+        description="Lesson Listener — Умный AI-суфлер для онлайн-уроков"
+    )
+
+
 class ScheduleManager:
     """Менеджер розкладу: відстежує поточний урок та автоматично вмикає перерву за часом."""
     def __init__(self, schedule_file: str = None):
@@ -472,7 +616,10 @@ class ScheduleManager:
         if os.path.isfile(self.file_path):
             try:
                 with open(self.file_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        data.setdefault("speak_lesson_start", True)
+                        return data
             except Exception as e:
                 logging.error(f"Помилка читання schedule.json: {e}")
         default_data = {
@@ -482,6 +629,7 @@ class ScheduleManager:
             "auto_open_meet": True,
             "detect_from_windows": True,
             "detect_from_audio": True,
+            "speak_lesson_start": True,
             "bells": DEFAULT_BELLS,
             "timetable": DEFAULT_TIMETABLE,
         }

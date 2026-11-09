@@ -16,5 +16,7 @@
   "active_subject": "algebra",
   "audio_category": "browser",
   "language": "auto",
-  "proxy": ""
+  "proxy": "",
+  "speak_lesson_start": true,
+  "autostart": true
 }

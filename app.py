@@ -26,10 +26,11 @@ from core import (ANSWER_MODELS, BG_MODELS, DEFAULT_BELLS, DEFAULT_CONFIG, DEFAU
                   FALLBACK_CHAIN, GEMINI_ANSWER_MODELS, GROQ_MODELS, HOTKEY, MAX_RING_SECONDS,
                   OPENROUTER_MODELS, PROVIDERS, TARGET_SR, GeminiEngine, LessonContext, ProfileManager,
                   ScheduleManager, UniversalRecorder, aloud_to_html, audio_to_wav_bytes, clean_math,
-                  detect_subject_from_text, detect_subject_from_windows, find_chrome_exe,
-                  find_school_chrome_profile, get_active_window_title, load_config,
-                  open_lesson_link, open_meet_in_school_profile, open_windows_sound_routing,
-                  parse_teacher_text_to_pairs, save_config)
+                  detect_subject_from_text, detect_subject_from_windows, ensure_start_menu_shortcut,
+                  find_chrome_exe, find_school_chrome_profile, get_active_window_title,
+                  is_windows_autostart_enabled, load_config, open_lesson_link, open_meet_in_school_profile,
+                  open_windows_sound_routing, parse_teacher_text_to_pairs, save_config,
+                  set_windows_autostart, speak_text)
 
 M = 14        # поле навколо картки під тінь
 RADIUS = 16
@@ -741,6 +742,7 @@ class SettingsPanel(QDialog):
         _sched_tg("Авто-відкриття уроку за розкладом (Meet / Zoom / Сферум)", "auto_open_meet")
         _sched_tg("Зчитувати предмет із заголовка Meet / Zoom / браузера", "detect_from_windows")
         _sched_tg("ШІ-розпізнавання перерви та предмета з голосу вчителя", "detect_from_audio")
+        _sched_tg("Голосове сповіщення про початок уроку (назва та час)", "speak_lesson_start")
         v.addWidget(card_tg)
 
         # 3. Розклад предметів на тиждень
@@ -986,6 +988,8 @@ class SettingsPanel(QDialog):
         self.tg_notify = self._toggle_row(c2, "Показувати відповідь сповіщенням у треї, коли віджет сховано",
                                           "notify_on_answer")
         self.tg_top = self._toggle_row(c2, "Віджет поверх усіх вікон", "topmost")
+        self.tg_autostart = self._toggle_row(c2, "Автозапуск при старті Windows (тихий запуск у трей)", "autostart", default=True)
+        self.tg_autostart.toggled.connect(lambda v: set_windows_autostart(bool(v)))
         self.tg_recess = self._toggle_row(c2, "Режим перерви (пауза звуку й ШІ на зміні)", "recess_dummy")
         self.tg_recess.toggled.connect(lambda on: c.toggle_recess(bool(on)))
         srow = QHBoxLayout()
@@ -1012,6 +1016,11 @@ class SettingsPanel(QDialog):
         self.ent_name.editingFinished.connect(lambda: c.set_option("student_name", self.ent_name.text().strip()))
         nrow.addWidget(self.ent_name)
         c2.addLayout(nrow)
+        btn_start_menu = QPushButton("📌 Оновити ярлик у меню «Пуск» (Start Menu)")
+        btn_start_menu.setObjectName("Soft")
+        btn_start_menu.setToolTip("Створює ярлик у меню Пуск Windows для запуску та закріплення на плитках")
+        btn_start_menu.clicked.connect(lambda *_: self._on_recreate_shortcut())
+        c2.addWidget(btn_start_menu)
         v.addWidget(card2)
 
         v.addWidget(self._section("Вигляд"))
@@ -1064,6 +1073,13 @@ class SettingsPanel(QDialog):
     def _on_opacity_changed(self, v):
         self.lbl_op.setText(f"{v}%")
         self.ctrl.set_option("widget_opacity", int(v))
+
+    def _on_recreate_shortcut(self):
+        res = ensure_start_menu_shortcut()
+        if res:
+            self.ctrl.set_status("Ярлик у меню «Пуск» створено ✔")
+        else:
+            self.ctrl.set_status("Не вдалося створити ярлик у меню «Пуск»", warn=True)
 
     # ---------------- оновлення вмісту
     def refresh_all(self):
@@ -1127,6 +1143,11 @@ class SettingsPanel(QDialog):
             self.cmb_lang.blockSignals(False)
         if hasattr(self, "ent_proxy"):
             self.ent_proxy.setText(cfg.get("proxy", ""))
+        if hasattr(self, "tg_autostart"):
+            self.tg_autostart.blockSignals(True)
+            self.tg_autostart.setChecked(is_windows_autostart_enabled())
+            self.tg_autostart.blockSignals(False)
+            self.tg_autostart.update()
 
     def refresh_key_state(self):
         gemini_ok = bool(self.ctrl.cfg.get("gemini_api_key"))
@@ -1202,6 +1223,13 @@ class LessonListenerApp(QObject):
         self.schedule_mgr = ScheduleManager()
         self._auto_recess_active = False
         self._opened_meets_today = set()
+        self._spoken_lessons_today = set()
+        try:
+            ensure_start_menu_shortcut()
+            if self.cfg.get("autostart", True):
+                set_windows_autostart(True)
+        except Exception:
+            pass
 
         self._sched_timer = QTimer(self)
         self._sched_timer.setInterval(5000)
@@ -1383,9 +1411,28 @@ class LessonListenerApp(QObject):
             else:
                 self.widget.lbl_banner.setText(f"{sub_name} · Тема: {topic}")
 
-        # 5. Авто-відкриття Google Meet у навчальному профілі Chrome
+        # 5. Авто-відкриття посилання на урок (Meet / Zoom / Сферум)
         if self.schedule_mgr.data.get("auto_open_meet", True) and not self.is_recess and st.get("is_school_time"):
             self.open_current_meet(force=False)
+
+        # 6. Голосове сповіщення про початок уроку (назва предмета і час)
+        if self.schedule_mgr.data.get("speak_lesson_start", True) and not self.is_recess and st.get("is_school_time"):
+            today_str = datetime.date.today().isoformat()
+            sub_id = st.get("subject_id") or self.active_profile.get("id")
+            lesson_num = st.get("lesson_num", 0)
+            speak_key = (today_str, lesson_num, sub_id)
+            if speak_key not in self._spoken_lessons_today:
+                self._spoken_lessons_today.add(speak_key)
+                prof = self.prof_mgr.get(sub_id) if hasattr(self, "prof_mgr") else self.active_profile
+                sub_name = prof.get("name", sub_id) if prof else self.active_profile.get("name", sub_id)
+                start_time = st.get("start") or datetime.datetime.now().strftime("%H:%M")
+                lang = self.cfg.get("language", "auto")
+                if lang == "uk":
+                    speech = f"Початок уроку: {sub_name}. Час {start_time}."
+                else:
+                    speech = f"Начало урока: {sub_name}. Время {start_time}."
+                logging.info(f"Оголошення початку уроку: {speech}")
+                speak_text(speech, lang=lang)
 
     def _set_busy(self, busy):
         self.busy = busy
