@@ -13,9 +13,10 @@ import threading
 import time
 
 import numpy as np
-from PySide6.QtCore import QObject, QPoint, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import (QActionGroup, QColor, QGuiApplication, QKeySequence, QPainter, QPalette, QPen,
-                           QShortcut)
+from PySide6.QtCore import (QBuffer, QByteArray, QIODevice, QObject, QPoint, QRect, QRectF,
+                            QSize, Qt, QTimer, Signal)
+from PySide6.QtGui import (QActionGroup, QColor, QCursor, QGuiApplication, QKeySequence, QPainter,
+                           QPalette, QPen, QPixmap, QShortcut)
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayout,
                                QInputDialog, QLabel, QLineEdit, QMenu, QMessageBox, QPlainTextEdit, QProgressBar,
                                QPushButton, QScrollArea, QSizeGrip, QSlider, QSystemTrayIcon, QTabWidget,
@@ -71,6 +72,93 @@ class Bridge(QObject):
     worker_error = Signal(str)
     bg_updated = Signal()
     hotkey = Signal()
+    snip_hotkey = Signal()
+
+
+class ScreenSnipper(QWidget):
+    """Повноекранний напівпрозорий оверлей для виділення області екрана (задачі, тесту, формули)."""
+    snippet_captured = Signal(bytes)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.WindowStaysOnTopHint |
+            Qt.WindowType.Tool
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        self.setCursor(Qt.CursorShape.CrossCursor)
+
+        # Визначаємо активний монітор за положенням курсора
+        cursor_pos = QCursor.pos()
+        screen = QGuiApplication.primaryScreen()
+        for s in QGuiApplication.screens():
+            if s.geometry().contains(cursor_pos):
+                screen = s
+                break
+        self._screen = screen
+        geo = screen.geometry()
+        self.setGeometry(geo)
+
+        # Миттєвий знімок екрана
+        self._screenshot = screen.grabWindow(0)
+        self._origin = None
+        self._current = None
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.drawPixmap(0, 0, self._screenshot)
+        # Напівпрозоре затемнення фону
+        painter.fillRect(self.rect(), QColor(0, 0, 0, 110))
+
+        if self._origin and self._current:
+            rect = QRect(self._origin, self._current).normalized()
+            if not rect.isEmpty():
+                painter.drawPixmap(rect, self._screenshot, rect)
+                pen = QPen(QColor("#38bdf8"), 2, Qt.PenStyle.SolidLine)
+                painter.setPen(pen)
+                painter.drawRect(rect)
+                txt = f"{rect.width()} × {rect.height()} px — відпусти ЛКМ або натисни Enter для розв'язку (Esc скасувати)"
+                painter.setPen(QColor("#ffffff"))
+                painter.drawText(rect.left() + 6, max(22, rect.top() - 6), txt)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._origin = event.pos()
+            self._current = event.pos()
+            self.update()
+        elif event.button() == Qt.MouseButton.RightButton:
+            self.close()
+
+    def mouseMoveEvent(self, event):
+        if self._origin:
+            self._current = event.pos()
+            self.update()
+
+    def _finish_capture(self, end_pos):
+        if not self._origin:
+            return
+        rect = QRect(self._origin, end_pos).normalized()
+        self._origin = None
+        self.close()
+        if rect.width() > 15 and rect.height() > 15:
+            cropped = self._screenshot.copy(rect)
+            ba = QByteArray()
+            buf = QBuffer(ba)
+            buf.open(QIODevice.OpenModeFlag.WriteOnly)
+            cropped.save(buf, "JPEG", 88)
+            self.snippet_captured.emit(bytes(ba))
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._origin:
+            self._finish_capture(event.pos())
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            self.close()
+        elif event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if self._origin and self._current:
+                self._finish_capture(self._current)
 
 
 class DragHeader(QWidget):
@@ -152,6 +240,8 @@ class FloatingWidget(QWidget):
                                       lambda *_: c.on_start_new_lesson())
         self.btn_meet = self._icon_btn("globe", "Відкрити урок (Google Meet / Zoom / посилання)",
                                        lambda *_: c.open_current_meet(force=True))
+        self.btn_snip = self._icon_btn("camera", "Показати область екрана (задачу / слайд / тест) — F9",
+                                       lambda *_: c.start_screen_snip())
         self.btn_recess = self._icon_btn("coffee", "Перерва / Пауза — вимкнути прослуховування на зміні",
                                          lambda *_: c.toggle_recess(), checkable=True)
         self.btn_recess.setObjectName("IconRecess")
@@ -161,7 +251,7 @@ class FloatingWidget(QWidget):
         self.btn_pin.setChecked(bool(c.cfg.get("topmost", True)))
         self.btn_gear = self._icon_btn("gear", "Пам'ять уроку та налаштування", lambda *_: c.open_panel())
         self.btn_hide = self._icon_btn("minimize", "Сховати в трей (Esc)", lambda *_: self.hide_widget())
-        for b in (self.btn_new, self.btn_meet, self.btn_recess, self.btn_mini, self.btn_pin, self.btn_gear, self.btn_hide):
+        for b in (self.btn_new, self.btn_meet, self.btn_snip, self.btn_recess, self.btn_mini, self.btn_pin, self.btn_gear, self.btn_hide):
             hl.addWidget(b)
         root.addWidget(self.header)
 
@@ -1208,6 +1298,8 @@ class LessonListenerApp(QObject):
         self.bridge.worker_error.connect(self._on_worker_error)
         self.bridge.bg_updated.connect(self._refresh_live_views)
         self.bridge.hotkey.connect(self.on_trigger_answer)
+        self.bridge.snip_hotkey.connect(self.start_screen_snip)
+        self._snipper = None
 
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
@@ -1580,11 +1672,13 @@ class LessonListenerApp(QObject):
         try:
             import keyboard
             keyboard.add_hotkey(HOTKEY, self.bridge.hotkey.emit)
+            keyboard.add_hotkey("F9", self.bridge.snip_hotkey.emit)
             ok = True
         except Exception as e:
             logging.warning(f"Глобальну гарячу клавішу не вдалося зареєструвати: {e}")
         if not ok:
             QShortcut(QKeySequence(HOTKEY.upper()), self.widget).activated.connect(self.on_trigger_answer)
+            QShortcut(QKeySequence("F9"), self.widget).activated.connect(self.start_screen_snip)
 
     def _init_audio(self):
         self.refresh_sources()
@@ -1728,6 +1822,57 @@ class LessonListenerApp(QObject):
 
         threading.Thread(target=_worker, daemon=True).start()
         return True
+
+    def start_screen_snip(self):
+        """Відкриває напівпрозорий оверлей для виділення області екрана (задачі, тесту, формули)."""
+        if self.is_recess:
+            self.set_status("⚠️ Зараз увімкнено перерву! Натисни ☕ або ▶️ щоб відновити урок", warn=True)
+            return
+        if self.busy:
+            logging.warning("Скріншот скасовано: суфлер уже обробляє інший запит.")
+            return
+        if not self.gemini.is_ready():
+            self.set_status("⚠️ API-ключ не налаштовано — відкрий ⚙ Налаштування", warn=True)
+            return
+
+        self._snipper = ScreenSnipper()
+        self._snipper.snippet_captured.connect(self.on_screen_snippet_captured)
+        self._snipper.show()
+
+    def on_screen_snippet_captured(self, img_bytes: bytes):
+        """Обробка виділеного фрагмента екрана: надсилання в Gemini Vision з урахуванням аудіо."""
+        if not img_bytes:
+            return
+        self._set_busy(True)
+        self.set_status("🔍 Аналізую виділену область екрана (завдання / тест)…")
+
+        wav_bytes = None
+        try:
+            audio = self.rec.get_last(15)
+            if len(audio) >= TARGET_SR * 2:
+                rms = float(np.sqrt(np.mean(audio * audio)))
+                if rms > 0.0015:
+                    wav_bytes = audio_to_wav_bytes(audio, TARGET_SR)
+        except Exception as e:
+            logging.warning(f"Не вдалося зняти аудіо з буфера для Vision: {e}")
+
+        def _worker():
+            t0 = time.time()
+            try:
+                ctx_str = self.context.get_prompt_context()
+                res = self.gemini.answer_vision_question(img_bytes, ctx_str, wav_bytes=wav_bytes)
+                dt = time.time() - t0
+                if "error" in res:
+                    logging.error(f"Vision повернув помилку: {res['error']}")
+                    self.bridge.worker_error.emit(res["error"])
+                    return
+                logging.info(f"Відповідь Vision отримана за {dt:.2f}с: {(res.get('say_aloud') or '')[:80]}...")
+                self.bridge.answer_ready.emit(res, dt)
+            except Exception as e:
+                logging.error(f"Збій у vision worker: {e}", exc_info=True)
+                self.bridge.worker_error.emit(str(e))
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def on_trigger_answer(self):
         if self.is_recess:

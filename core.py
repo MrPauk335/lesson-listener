@@ -1349,6 +1349,60 @@ def build_text_prompt(question_text: str, context_str: str, student_name: str = 
     )
 
 
+def build_vision_prompt(context_str: str, student_name: str = "", lang: str = "auto") -> str:
+    """Промпт для розпізнавання та миттєвого розв'язку задачі / тесту / слайда з виділеної області екрана."""
+    is_ru = (lang == "ru") or (lang != "uk" and any(k in context_str.lower() for k in [
+        "россия", "русск", "обществознан", "литератур", "обж", "обзр", "учитель", "класс", "москва", "рф"
+    ]))
+    who = _student_identity_clause(student_name, is_ru=is_ru)
+
+    if is_ru:
+        return (
+            "Ты — сверхточный предметный и экзаменационный ИИ-суфлёр.\n"
+            "Ученик выделил область экрана (задачу, тест, график, формулу, код или слайд презентации).\n"
+            "Если к запросу приложено аудио с урока — учти также слова учителя.\n\n"
+            f"КОНТЕКСТ УРОКА:\n{context_str}\n\n"
+            "ЖЕЛЕЗНЫЕ ПРАВИЛА:\n"
+            "1. ЯЗЫК ОТВЕТА — СТРОГО РУССКИЙ.\n"
+            f"2. {who}\n"
+            "3. МАКСИМАЛЬНАЯ ТОЧНОСТЬ И СКОРОСТЬ:\n"
+            "   - Определи условие задачи/вопроса на изображении.\n"
+            "   - Если это ТЕСТ С ВАРИАНТАМИ (А, Б, В, Г / 1, 2, 3, 4): сразу назови правильную букву/цифру и текст варианта.\n"
+            "   - Если это математическая/физическая задача: дай точный числовой ответ и краткий пошаговый ход решения.\n"
+            "   - Если на экране график/чертёж: определи координаты, точки пересечения или геометрические свойства.\n"
+            "4. В поле [СКАЗАТЬ ВСЛУХ]:\n"
+            "   - Сформулируй чистый, уверенный ответ, который ученик может сразу прочитать вслух учителю.\n"
+            "   - Никакой воды и лишних вступлений.\n\n"
+            "СТРОГИЙ ФОРМАТ:\n"
+            "[ВОПРОС]: <условие или формулировка задачи с экрана>\n"
+            "[ПОЯСНЕНИЕ]: <пошаговое решение / расчёт / обоснование выбора>\n"
+            "[СКАЗАТЬ ВСЛУХ]: <готовый ответ для озвучивания учителю>\n"
+            "[ТЕРМИНЫ]: <ключевые термины/формулы>"
+        )
+
+    return (
+        "Ти — надточний предметний та екзаменаційний ІІ-суфлер.\n"
+        "Учень виділив область екрана (задачу, тест, графік, формулу, код або слайд презентації).\n"
+        "Якщо до запиту додано аудіо з уроку — врахуй також слова вчителя.\n\n"
+        f"КОНТЕКСТ УРОКУ:\n{context_str}\n\n"
+        "ЖАЛІЗНІ ПРАВИЛА:\n"
+        f"1. {who}\n"
+        "2. МАКСИМАЛЬНА ТОЧНІСТЬ І ШВИДКІСТЬ:\n"
+        "   - Визнач умову задачі/питання на зображенні.\n"
+        "   - Якщо це ТЕСТ З ВАРІАНТАМИ (А, Б, В, Г / 1, 2, 3, 4): одразу чітко назви правильну літеру та формулювання варіанта.\n"
+        "   - Якщо це математична/фізична задача: дай точну числову відповідь та короткий покроковий хід розв'язку.\n"
+        "   - Якщо на екрані графік/креслення: визнач координати, точки перетину чи геометричні властивості.\n"
+        "3. У полі [СКАЗАТИ ВГОЛОС]:\n"
+        "   - Сформулюй чисту, впевнену відповідь, яку учень може одразу зачитати вголос учителю.\n"
+        "   - Жодної води та зайвих вступів.\n\n"
+        "СТРОГИЙ ФОРМАТ:\n"
+        "[ЗАПИТАННЯ]: <умова або суть завдання з екрана>\n"
+        "[ПОЯСНЕННЯ]: <покроковий розв'язок / розрахунок / обґрунтування>\n"
+        "[СКАЗАТИ ВГОЛОС]: <готова відповідь для озвучування вчителю>\n"
+        "[ТЕРМІНИ]: <ключові терміни/формули>"
+    )
+
+
 class GeminiEngine:
     """Універсальний мульти-провайдерний рушій:
     Підтримує:
@@ -1424,14 +1478,17 @@ class GeminiEngine:
         return bool(self.cfg.get("gemini_api_key") and len(self.cfg["gemini_api_key"]) > 10)
 
     # ---- 1. Google Gemini
-    def _call_gemini(self, model: str, prompt: str, wav_bytes: bytes = None, timeout: int = 22,
-                     max_tokens: int = 1500, _tried=None) -> str:
+    def _call_gemini(self, model: str, prompt: str, wav_bytes: bytes = None, image_bytes: bytes = None,
+                     timeout: int = 22, max_tokens: int = 1500, _tried=None) -> str:
         key = self.cfg.get("gemini_api_key", "").strip()
         if not key:
             raise RuntimeError("API-ключ Gemini не налаштовано.")
         import base64
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
         parts = []
+        if image_bytes and len(image_bytes) > 0:
+            b64_img = base64.b64encode(image_bytes).decode("utf-8")
+            parts.append({"inline_data": {"mime_type": "image/jpeg", "data": b64_img}})
         if wav_bytes and len(wav_bytes) > 0:
             b64_audio = base64.b64encode(wav_bytes).decode("utf-8")
             parts.append({"inline_data": {"mime_type": "audio/wav", "data": b64_audio}})
@@ -1450,8 +1507,8 @@ class GeminiEngine:
                 nxt = next((m for m in FALLBACK_CHAIN if m not in tried), None)
                 if nxt:
                     logging.warning(f"Gemini {model}: збій ({net_err}). Автоперехід на {nxt}...")
-                    return self._call_gemini(nxt, prompt, wav_bytes=wav_bytes, timeout=timeout,
-                                            max_tokens=max_tokens, _tried=tried)
+                    return self._call_gemini(nxt, prompt, wav_bytes=wav_bytes, image_bytes=image_bytes,
+                                             timeout=timeout, max_tokens=max_tokens, _tried=tried)
             raise
 
         if resp.status_code == 400 and self.thinking and "thinking" in resp.text.lower():
@@ -1464,8 +1521,8 @@ class GeminiEngine:
             nxt = next((m for m in FALLBACK_CHAIN if m not in tried), None)
             if nxt:
                 logging.warning(f"Gemini {model}: HTTP {resp.status_code}. Автоперехід на {nxt}...")
-                return self._call_gemini(nxt, prompt, wav_bytes=wav_bytes, timeout=timeout,
-                                        max_tokens=max_tokens, _tried=tried)
+                return self._call_gemini(nxt, prompt, wav_bytes=wav_bytes, image_bytes=image_bytes,
+                                         timeout=timeout, max_tokens=max_tokens, _tried=tried)
 
         if resp.status_code != 200:
             err_text = resp.text
@@ -1481,7 +1538,8 @@ class GeminiEngine:
         return "\n".join(out_texts).strip()
 
     # ---- 2. OpenRouter (Nemotron 3 Ultra 550B, Gemma 4, etc.)
-    def _call_openrouter(self, model: str, prompt: str, timeout: int = 25, max_tokens: int = 1500) -> str:
+    def _call_openrouter(self, model: str, prompt: str, image_bytes: bytes = None,
+                         timeout: int = 25, max_tokens: int = 1500) -> str:
         key = self.cfg.get("openrouter_api_key", "").strip()
         if not key:
             raise RuntimeError("API-ключ OpenRouter не вказано в налаштуваннях.")
@@ -1492,9 +1550,22 @@ class GeminiEngine:
             "X-Title": "Lesson Listener",
             "Content-Type": "application/json"
         }
+        if image_bytes and len(image_bytes) > 0:
+            import base64
+            b64_img = base64.b64encode(image_bytes).decode("utf-8")
+            messages = [{
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}},
+                    {"type": "text", "text": prompt}
+                ]
+            }]
+        else:
+            messages = [{"role": "user", "content": prompt}]
+
         payload = {
             "model": model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": messages,
             "temperature": 0.1,
             "max_tokens": max_tokens
         }
@@ -1688,6 +1759,33 @@ class GeminiEngine:
 
         # Відправляємо розшифрований діалог уроку у супер-модель (Nemotron 3 Ultra / Gemma 4 / Qwen 3.8)
         return self.answer_text_question(transcript, context_str)
+
+    def answer_vision_question(self, image_bytes: bytes, context_str: str, wav_bytes: bytes = None) -> dict:
+        prov = self.cfg.get("active_provider", "gemini")
+        prompt = build_vision_prompt(context_str, self.student_name)
+
+        # 1. Gemini (мультимодальний: приймає зображення і за потреби звук)
+        if (prov == "gemini" or not self.cfg.get("openrouter_api_key")) and self.cfg.get("gemini_api_key"):
+            model = self.cfg.get("answer_model", "gemini-3.5-flash-lite")
+            try:
+                text = self._call_gemini(model, prompt, wav_bytes=wav_bytes, image_bytes=image_bytes,
+                                         timeout=25, max_tokens=1500)
+                return self._parse_answer(text, default_question="Завдання з екрана")
+            except Exception as e:
+                logging.warning(f"Gemini Vision помилка: {e}. Перевіряю OpenRouter...")
+                if not self.cfg.get("openrouter_api_key"):
+                    return {"error": f"Помилка розпізнавання екрана: {e}"}
+
+        # 2. OpenRouter (мультимодальні моделі: gemini / qwen-vl тощо)
+        if self.cfg.get("openrouter_api_key"):
+            or_model = self.cfg.get("openrouter_vision_model", "google/gemini-2.5-flash")
+            try:
+                text = self._call_openrouter(or_model, prompt, image_bytes=image_bytes, timeout=25, max_tokens=1500)
+                return self._parse_answer(text, default_question="Завдання з екрана")
+            except Exception as e:
+                return {"error": f"OpenRouter Vision помилка: {e}"}
+
+        return {"error": "API-ключ для розпізнавання екрана не налаштовано."}
 
     def analyze_background(self, wav_bytes: bytes, current_ctx: LessonContext) -> dict:
         if not self.is_ready():

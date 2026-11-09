@@ -45,6 +45,8 @@ GLYPH = {
     "education": "\uE7BE",
     "pause": "\uE769",
     "play": "\uE768",
+    "camera": "\uE722",
+    "crop": "\uE7A8",
 }
 
 
