@@ -7,6 +7,7 @@ lesson.log
 err.txt
 bench_results.json
 *.tmp
+*.zip
 
 # Python byte code and virtual environments
 __pycache__/
