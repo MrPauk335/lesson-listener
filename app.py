@@ -105,22 +105,36 @@ class ScreenSnipper(QWidget):
         self._origin = None
         self._current = None
 
+    def _to_physical_rect(self, rect: QRect) -> QRect:
+        """Переводить логічні координати виділення миші у фізичні пікселі знімка (High-DPI)."""
+        dpr = self._screen.devicePixelRatio()
+        sx = int(round(rect.x() * dpr))
+        sy = int(round(rect.y() * dpr))
+        sw = int(round(rect.width() * dpr))
+        sh = int(round(rect.height() * dpr))
+        return QRect(sx, sy, sw, sh).intersected(self._screenshot.rect())
+
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.drawPixmap(0, 0, self._screenshot)
+        # Малюємо заморожений екран точно на весь віджет (масштабується під логічний розмір екрана)
+        painter.drawPixmap(self.rect(), self._screenshot)
         # Напівпрозоре затемнення фону
         painter.fillRect(self.rect(), QColor(0, 0, 0, 110))
 
         if self._origin and self._current:
             rect = QRect(self._origin, self._current).normalized()
             if not rect.isEmpty():
-                painter.drawPixmap(rect, self._screenshot, rect)
+                src_rect = self._to_physical_rect(rect)
+                painter.drawPixmap(rect, self._screenshot, src_rect)
                 pen = QPen(QColor("#38bdf8"), 2, Qt.PenStyle.SolidLine)
                 painter.setPen(pen)
                 painter.drawRect(rect)
-                txt = f"{rect.width()} × {rect.height()} px — відпусти ЛКМ або натисни Enter для розв'язку (Esc скасувати)"
+                txt = f"{rect.width()} × {rect.height()} px — відпусти або Enter для розв'язку (Esc скасувати)"
                 painter.setPen(QColor("#ffffff"))
                 painter.drawText(rect.left() + 6, max(22, rect.top() - 6), txt)
+        else:
+            painter.setPen(QColor("#ffffff"))
+            painter.drawText(20, 35, "🎯 Затисни ліву кнопку миші та виділи рамкою завдання / тест • Esc для скасування")
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -142,11 +156,12 @@ class ScreenSnipper(QWidget):
         self._origin = None
         self.close()
         if rect.width() > 15 and rect.height() > 15:
-            cropped = self._screenshot.copy(rect)
+            src_rect = self._to_physical_rect(rect)
+            cropped = self._screenshot.copy(src_rect)
             ba = QByteArray()
             buf = QBuffer(ba)
             buf.open(QIODevice.OpenModeFlag.WriteOnly)
-            cropped.save(buf, "JPEG", 88)
+            cropped.save(buf, "JPEG", 90)
             self.snippet_captured.emit(bytes(ba))
 
     def mouseReleaseEvent(self, event):
@@ -1838,6 +1853,8 @@ class LessonListenerApp(QObject):
         self._snipper = ScreenSnipper()
         self._snipper.snippet_captured.connect(self.on_screen_snippet_captured)
         self._snipper.show()
+        self._snipper.raise_()
+        self._snipper.activateWindow()
 
     def on_screen_snippet_captured(self, img_bytes: bytes):
         """Обробка виділеного фрагмента екрана: надсилання в Gemini Vision з урахуванням аудіо."""
