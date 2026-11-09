@@ -22,15 +22,33 @@ import sys
 import threading
 import time
 import wave
+import webbrowser
 
 import numpy as np
 import psutil
 import requests
-import pyaudiowpatch as pyaudio
+if sys.platform == "win32":
+    try:
+        import pyaudiowpatch as pyaudio
+    except Exception:
+        pyaudio = None
+else:
+    pyaudio = None
+
+if sys.platform == "linux":
+    try:
+        import sounddevice as sounddevice
+    except Exception:
+        sounddevice = None
+else:
+    sounddevice = None
 
 try:
-    import proctap
-    HAS_PROCTAP = True
+    if sys.platform == "win32":
+        import proctap
+        HAS_PROCTAP = True
+    else:
+        HAS_PROCTAP = False
 except Exception:
     HAS_PROCTAP = False
 
@@ -45,9 +63,58 @@ MAX_RING_SECONDS = 45
 HOTKEY = "f8"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
-PROFILES_DIR = os.path.join(BASE_DIR, "profiles")
-LOG_FILE = os.path.join(BASE_DIR, "lesson.log")
+RESOURCE_DIR = os.path.abspath(getattr(sys, "_MEIPASS", BASE_DIR))
+APP_DATA_NAME = "Lesson Listener"
+
+if sys.platform == "win32" and not getattr(sys, "frozen", False):
+    DATA_DIR = BASE_DIR
+elif sys.platform == "win32":
+    DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~/AppData/Local"), APP_DATA_NAME)
+else:
+    DATA_DIR = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "lesson-listener")
+
+CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
+PROFILES_DIR = os.path.join(DATA_DIR, "profiles")
+SCHEDULE_FILE = os.path.join(DATA_DIR, "schedule.json")
+LECTURES_DIR = os.path.join(DATA_DIR, "lectures")
+LOG_FILE = os.path.join(DATA_DIR, "lesson.log")
+
+
+def _copy_missing_file(source: str, target: str):
+    if os.path.isfile(source) and not os.path.exists(target):
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        shutil.copy2(source, target)
+
+
+def _seed_user_data():
+    os.makedirs(DATA_DIR, exist_ok=True)
+    legacy_dirs = [BASE_DIR]
+    if getattr(sys, "frozen", False):
+        legacy_dirs.append(os.path.dirname(os.path.abspath(sys.executable)))
+    for legacy_dir in dict.fromkeys(legacy_dirs):
+        if os.path.abspath(legacy_dir) == os.path.abspath(DATA_DIR):
+            continue
+        _copy_missing_file(os.path.join(legacy_dir, "config.json"), CONFIG_FILE)
+        _copy_missing_file(os.path.join(legacy_dir, "schedule.json"), SCHEDULE_FILE)
+        _copy_missing_file(os.path.join(legacy_dir, "lesson.log"), LOG_FILE)
+        old_profiles = os.path.join(legacy_dir, "profiles")
+        if os.path.isdir(old_profiles):
+            os.makedirs(PROFILES_DIR, exist_ok=True)
+            for name in os.listdir(old_profiles):
+                _copy_missing_file(os.path.join(old_profiles, name), os.path.join(PROFILES_DIR, name))
+
+    _copy_missing_file(os.path.join(RESOURCE_DIR, "config.template.json"), CONFIG_FILE)
+    _copy_missing_file(os.path.join(RESOURCE_DIR, "schedule.json"), SCHEDULE_FILE)
+    bundled_profiles = os.path.join(RESOURCE_DIR, "profiles")
+    if os.path.isdir(bundled_profiles):
+        os.makedirs(PROFILES_DIR, exist_ok=True)
+        for name in os.listdir(bundled_profiles):
+            _copy_missing_file(os.path.join(bundled_profiles, name), os.path.join(PROFILES_DIR, name))
+    os.makedirs(PROFILES_DIR, exist_ok=True)
+    os.makedirs(LECTURES_DIR, exist_ok=True)
+
+
+_seed_user_data()
 
 # Логування
 logger = logging.getLogger()
@@ -143,6 +210,8 @@ def load_config():
                 cfg.update(saved)
         except Exception:
             pass
+    if sys.platform != "win32":
+        cfg["autostart"] = False
     env_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if env_key and not cfg.get("gemini_api_key"):
         cfg["gemini_api_key"] = env_key
@@ -151,6 +220,7 @@ def load_config():
 
 def save_config(cfg):
     try:
+        os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(cfg, f, ensure_ascii=False, indent=2)
     except Exception as e:
@@ -160,8 +230,6 @@ def save_config(cfg):
 # --------------------------------------------------------------------------
 # Розклад дзвінків та уроків (Авто-визначення уроку та перерви)
 # --------------------------------------------------------------------------
-SCHEDULE_FILE = os.path.join(BASE_DIR, "schedule.json")
-
 DEFAULT_BELLS = [
     {"num": 1, "start": "08:30", "end": "09:15"},
     {"num": 2, "start": "09:25", "end": "10:10"},
@@ -330,7 +398,14 @@ def detect_subject_from_text(text: str) -> str:
 
 
 def get_active_window_title() -> str:
-    """Повертає заголовок поточного активного вікна користувача в Windows."""
+    """Повертає заголовок активного вікна, якщо його надає поточне середовище."""
+    if sys.platform == "linux":
+        try:
+            res = subprocess.run(["xdotool", "getactivewindow", "getwindowname"], capture_output=True,
+                                 text=True, timeout=1, check=True)
+            return res.stdout.strip()
+        except Exception:
+            return ""
     try:
         user32 = ctypes.windll.user32
         hwnd = user32.GetForegroundWindow()
@@ -352,6 +427,16 @@ def get_all_matching_window_titles() -> list:
     active = get_active_window_title()
     if active:
         titles.append(active)
+    if sys.platform == "linux":
+        try:
+            res = subprocess.run(["wmctrl", "-l"], capture_output=True, text=True, timeout=2, check=True)
+            for line in res.stdout.splitlines():
+                parts = line.split(None, 3)
+                if len(parts) == 4 and parts[3] not in titles:
+                    titles.append(parts[3])
+        except Exception:
+            pass
+        return titles
     try:
         user32 = ctypes.windll.user32
         def enum_cb(hwnd, lparam):
@@ -373,6 +458,8 @@ def get_all_matching_window_titles() -> list:
 
 def open_windows_sound_routing() -> bool:
     """Відкриває системні налаштування гучності та пристроїв Windows (App volume)."""
+    if sys.platform != "win32":
+        return False
     try:
         os.system("start ms-settings:apps-volume")
         return True
@@ -391,6 +478,12 @@ def detect_subject_from_windows() -> str:
 
 def find_chrome_exe() -> str:
     """Знаходить шлях до виконуваного файлу Google Chrome."""
+    if sys.platform == "linux":
+        for name in ("google-chrome", "google-chrome-stable", "chrome", "chromium", "chromium-browser"):
+            path = shutil.which(name)
+            if path:
+                return path
+        return ""
     candidates = [
         os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
         os.path.expandvars(r"%PROGRAMFILES%\Google\Chrome\Application\chrome.exe"),
@@ -405,7 +498,13 @@ def find_chrome_exe() -> str:
 
 def find_school_chrome_profile() -> str:
     """Знаходить директорію навчального профілю Chrome (наприклад, Profile 3)."""
-    local_state_path = os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data\Local State")
+    if sys.platform == "linux":
+        config_home = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+        candidates = [os.path.join(config_home, "google-chrome", "Local State"),
+                      os.path.join(config_home, "chromium", "Local State")]
+        local_state_path = next((path for path in candidates if os.path.isfile(path)), "")
+    else:
+        local_state_path = os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data\Local State")
     if os.path.isfile(local_state_path):
         try:
             with open(local_state_path, "r", encoding="utf-8") as f:
@@ -426,6 +525,8 @@ def open_meet_in_school_profile(meet_url: str, profile_dir: str = None) -> bool:
     if not meet_url:
         return False
     chrome_exe = find_chrome_exe()
+    if not chrome_exe:
+        return open_url_or_file(meet_url)
     prof = profile_dir or find_school_chrome_profile()
     try:
         cmd = [chrome_exe, f"--profile-directory={prof}", meet_url]
@@ -434,7 +535,43 @@ def open_meet_in_school_profile(meet_url: str, profile_dir: str = None) -> bool:
         return True
     except Exception as e:
         logging.error(f"Помилка відкриття Google Meet: {e}")
+        return open_url_or_file(meet_url)
+
+
+def open_url_or_file(target: str) -> bool:
+    """Відкриває URL або файл системним обробником за замовчуванням."""
+    if not target:
         return False
+    if sys.platform == "win32":
+        try:
+            os.startfile(target)
+            return True
+        except Exception as e:
+            logging.error(f"Помилка відкриття {target}: {e}")
+            return False
+
+    is_url = bool(re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", target)) and not os.path.exists(target)
+    try:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        url = QUrl(target) if is_url else QUrl.fromLocalFile(os.path.abspath(target))
+        if QDesktopServices.openUrl(url):
+            return True
+    except Exception as e:
+        logging.debug(f"Qt URL handler unavailable for {target}: {e}")
+
+    if is_url:
+        return bool(webbrowser.open(target))
+    opener = shutil.which("xdg-open")
+    if opener:
+        try:
+            subprocess.Popen([opener, os.path.abspath(target)], stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+            return True
+        except Exception as e:
+            logging.error(f"Помилка відкриття файлу {target}: {e}")
+    return False
 
 
 def open_lesson_link(url: str, chrome_profile: str = None) -> bool:
@@ -450,7 +587,8 @@ def open_lesson_link(url: str, chrome_profile: str = None) -> bool:
     # 2. Zoom (посилання https://zoom.us/j/... або протокол zoommtg://)
     if "zoom.us" in url or url.startswith("zoommtg://"):
         try:
-            os.startfile(url)
+            if not open_url_or_file(url):
+                return False
             logging.info(f"Запущено конференцію Zoom: {url}")
             return True
         except Exception as e:
@@ -458,7 +596,8 @@ def open_lesson_link(url: str, chrome_profile: str = None) -> bool:
 
     # 3. Яндекс Телемост / Сферум / VK Teams / сторонні посилання
     try:
-        os.startfile(url)
+        if not open_url_or_file(url):
+            return False
         logging.info(f"Відкрито навчальне посилання: {url}")
         return True
     except Exception as e:
@@ -482,7 +621,9 @@ def is_lesson_already_open(meet_url: str = "", subject_id: str = "", subject_nam
         if "zoom" in fg_title and ("meeting" in fg_title or "конференц" in fg_title):
             return True
 
-    # 2. Швидке сканування вікон браузерів та Zoom через tasklist
+    # 2. Швидке сканування Windows-процесів для вкладок браузерів та Zoom.
+    if sys.platform != "win32":
+        return False
     for exe in ["chrome.exe", "zoom.exe", "msedge.exe", "browser.exe"]:
         try:
             res = subprocess.run(
@@ -513,7 +654,7 @@ def is_lesson_already_open(meet_url: str = "", subject_id: str = "", subject_nam
 
 def speak_text(text: str, lang: str = "ru"):
     """Озвучує текст через Windows SAPI або PowerShell SpeechSynthesizer у фоновому потоці."""
-    if not text:
+    if not text or sys.platform != "win32":
         return
 
     def _worker():
@@ -554,17 +695,23 @@ def speak_text(text: str, lang: str = "ru"):
 
 
 def get_start_menu_shortcut_path() -> str:
+    if sys.platform != "win32":
+        return ""
     appdata = os.environ.get("APPDATA", "")
     return os.path.join(appdata, r"Microsoft\Windows\Start Menu\Programs\Lesson Listener.lnk")
 
 
 def get_startup_shortcut_path() -> str:
+    if sys.platform != "win32":
+        return ""
     appdata = os.environ.get("APPDATA", "")
     return os.path.join(appdata, r"Microsoft\Windows\Start Menu\Programs\Startup\Lesson Listener.lnk")
 
 
 def create_windows_shortcut(shortcut_path: str, target: str, arguments: str = "",
                             work_dir: str = "", icon_path: str = "", description: str = "") -> bool:
+    if sys.platform != "win32":
+        return False
     try:
         os.makedirs(os.path.dirname(shortcut_path), exist_ok=True)
         import win32com.client
@@ -607,22 +754,32 @@ def create_windows_shortcut(shortcut_path: str, target: str, arguments: str = ""
 
 
 def is_windows_autostart_enabled() -> bool:
+    if sys.platform != "win32":
+        return False
     return os.path.isfile(get_startup_shortcut_path())
 
 
 def set_windows_autostart(enabled: bool) -> bool:
+    if sys.platform != "win32":
+        return False
     startup_path = get_startup_shortcut_path()
     if enabled:
-        py_exe = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
-        if not os.path.isfile(py_exe):
-            py_exe = sys.executable
-        app_py = os.path.join(BASE_DIR, "app.py")
-        icon = os.path.join(BASE_DIR, "icon.ico")
+        if getattr(sys, "frozen", False):
+            target = sys.executable
+            arguments = "--tray"
+            work_dir = os.path.dirname(sys.executable)
+        else:
+            target = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+            if not os.path.isfile(target):
+                target = sys.executable
+            arguments = f'"{os.path.join(BASE_DIR, "app.py")}" --tray'
+            work_dir = BASE_DIR
+        icon = os.path.join(RESOURCE_DIR, "icon.ico")
         return create_windows_shortcut(
             shortcut_path=startup_path,
-            target=py_exe,
-            arguments=f'"{app_py}" --tray',
-            work_dir=BASE_DIR,
+            target=target,
+            arguments=arguments,
+            work_dir=work_dir,
             icon_path=icon,
             description="Lesson Listener AutoStart"
         )
@@ -637,17 +794,25 @@ def set_windows_autostart(enabled: bool) -> bool:
 
 
 def ensure_start_menu_shortcut() -> bool:
+    if sys.platform != "win32":
+        return False
     lnk_path = get_start_menu_shortcut_path()
-    py_exe = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
-    if not os.path.isfile(py_exe):
-        py_exe = sys.executable
-    app_py = os.path.join(BASE_DIR, "app.py")
-    icon = os.path.join(BASE_DIR, "icon.ico")
+    if getattr(sys, "frozen", False):
+        target = sys.executable
+        arguments = ""
+        work_dir = os.path.dirname(sys.executable)
+    else:
+        target = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+        if not os.path.isfile(target):
+            target = sys.executable
+        arguments = f'"{os.path.join(BASE_DIR, "app.py")}"'
+        work_dir = BASE_DIR
+    icon = os.path.join(RESOURCE_DIR, "icon.ico")
     return create_windows_shortcut(
         shortcut_path=lnk_path,
-        target=py_exe,
-        arguments=f'"{app_py}"',
-        work_dir=BASE_DIR,
+        target=target,
+        arguments=arguments,
+        work_dir=work_dir,
         icon_path=icon,
         description="Lesson Listener — Умный AI-суфлер для онлайн-уроков"
     )
@@ -687,6 +852,7 @@ class ScheduleManager:
         if data is not None:
             self.data = data
         try:
+            os.makedirs(os.path.dirname(os.path.abspath(self.file_path)), exist_ok=True)
             with open(self.file_path, "w", encoding="utf-8") as f:
                 json.dump(self.data, f, ensure_ascii=False, indent=2)
         except Exception as e:
@@ -854,9 +1020,10 @@ class ScheduleManager:
 class LectureManager:
     """Менеджер конспектів уроків: автоматично зберігає хроніку, тези, Q&A та скріншоти дошки."""
 
-    def __init__(self, base_dir: str = "lectures"):
-        self.base_dir = base_dir
-        self.screenshots_dir = os.path.join(base_dir, "screenshots")
+    def __init__(self, base_dir: str = None):
+        self.base_dir = base_dir or LECTURES_DIR
+        os.makedirs(self.base_dir, exist_ok=True)
+        self.screenshots_dir = os.path.join(self.base_dir, "screenshots")
         os.makedirs(self.screenshots_dir, exist_ok=True)
         self._logged_summaries = set()
 
@@ -958,14 +1125,14 @@ class LectureManager:
     def open_lecture(self, subject_id: str, subject_name: str = "", teacher_name: str = "") -> str:
         self._ensure_header(subject_id, subject_name, teacher_name)
         path = os.path.abspath(self.get_lecture_path(subject_id))
-        if sys.platform == "win32" and os.path.exists(path):
-            os.startfile(path)
+        if os.path.exists(path):
+            open_url_or_file(path)
         return path
 
     def open_lectures_folder(self) -> str:
         path = os.path.abspath(self.base_dir)
-        if sys.platform == "win32" and os.path.exists(path):
-            os.startfile(path)
+        if os.path.exists(path):
+            open_url_or_file(path)
         return path
 
 
@@ -1972,8 +2139,14 @@ class GeminiEngine:
 # --------------------------------------------------------------------------
 class UniversalRecorder:
     def __init__(self):
-        self.pa = pyaudio.PyAudio()
+        self.pa = None
+        if pyaudio is not None:
+            try:
+                self.pa = pyaudio.PyAudio()
+            except Exception as e:
+                logging.warning(f"PortAudio не вдалося ініціалізувати: {e}")
         self.pa_stream = None
+        self.sd_stream = None
         self.proctap_stream = None
         self.lock = threading.RLock()
         self.chunks = collections.deque()
@@ -1989,6 +2162,44 @@ class UniversalRecorder:
 
     def list_sources(self):
         sources = []
+
+        if sys.platform == "linux":
+            if sounddevice is None:
+                return sources
+            try:
+                devices = sounddevice.query_devices()
+                default_input = sounddevice.default.device[0]
+                if default_input is None or default_input < 0:
+                    default_input = None
+                linux_sources = []
+                for index, device in enumerate(devices):
+                    channels = int(device.get("max_input_channels", 0))
+                    if channels < 1:
+                        continue
+                    name = str(device.get("name", f"Audio input {index}"))
+                    normalized_name = name.lower()
+                    is_monitor = "monitor" in normalized_name or "loopback" in normalized_name
+                    category = "system" if is_monitor else "mic"
+                    icon = "🔊 Системний звук (монітор)" if is_monitor else "🎤 Мікрофон"
+                    item = (f"{icon}: {name}", {
+                        "category": category,
+                        "dev": {
+                            "index": index,
+                            "defaultSampleRate": device.get("default_samplerate", TARGET_SR),
+                            "maxInputChannels": channels,
+                        },
+                    })
+                    if index == default_input:
+                        linux_sources.insert(0, item)
+                    else:
+                        linux_sources.append(item)
+                return linux_sources
+            except Exception as e:
+                logging.warning(f"Не вдалося отримати Linux аудіопристрої: {e}")
+                return sources
+
+        if self.pa is None:
+            return sources
 
         # 1. Браузери (знаходимо кореневий процес для захоплення звуку дерева вкладок)
         browser_sources = []
@@ -2068,8 +2279,25 @@ class UniversalRecorder:
                 resample_quality="fast"
             )
             self.proctap_stream.start()
+        elif sys.platform == "linux":
+            if sounddevice is None:
+                raise RuntimeError("Linux audio backend unavailable; install sounddevice and PortAudio")
+            dev = source_info["dev"]
+            src_sr = int(dev.get("defaultSampleRate") or TARGET_SR)
+            channels = max(1, int(dev["maxInputChannels"]))
+            self.sd_stream = sounddevice.InputStream(
+                device=dev["index"],
+                samplerate=src_sr,
+                channels=channels,
+                dtype="int16",
+                callback=lambda data, frames, timing, status: self._on_pa_audio(
+                    data.tobytes(), channels, src_sr
+                ),
+            )
         else:
             dev = source_info["dev"]
+            if self.pa is None:
+                raise RuntimeError("Windows audio backend unavailable")
             src_sr = int(dev["defaultSampleRate"])
             channels = max(1, int(dev["maxInputChannels"]))
             self.pa_stream = self.pa.open(
@@ -2084,20 +2312,49 @@ class UniversalRecorder:
 
     def stop(self):
         if self.proctap_stream is not None:
+            stream = self.proctap_stream
+            self.proctap_stream = None
             try:
-                self.proctap_stream.stop()
-                self.proctap_stream.close()
+                stream.stop()
             except Exception:
                 pass
-            self.proctap_stream = None
+            try:
+                stream.close()
+            except Exception:
+                pass
 
         if self.pa_stream is not None:
+            stream = self.pa_stream
+            self.pa_stream = None
             try:
-                self.pa_stream.stop_stream()
-                self.pa_stream.close()
+                stream.stop_stream()
             except Exception:
                 pass
-            self.pa_stream = None
+            try:
+                stream.close()
+            except Exception:
+                pass
+
+        if self.sd_stream is not None:
+            stream = self.sd_stream
+            self.sd_stream = None
+            try:
+                stream.stop()
+            except Exception:
+                pass
+            try:
+                stream.close()
+            except Exception:
+                pass
+
+    def close(self):
+        self.stop()
+        if self.pa is not None:
+            try:
+                self.pa.terminate()
+            except Exception:
+                pass
+            self.pa = None
 
     def _on_proctap_audio(self, pcm_bytes: bytes, *args, **kwargs):
         try:
@@ -2125,7 +2382,7 @@ class UniversalRecorder:
             self._push_audio_chunk(a.astype(np.float32))
         except Exception:
             pass
-        return (None, pyaudio.paContinue)
+        return (None, getattr(pyaudio, "paContinue", 0))
 
     def _push_audio_chunk(self, a: np.ndarray):
         if len(a):
