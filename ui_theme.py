@@ -253,19 +253,29 @@ def render_card(width: int, height: int, margin: int, radius: int, dpr: float = 
 
 
 def set_topmost(widget, on: bool):
-    """Перемикає «поверх усіх вікон» через WinAPI — без миготіння й перестворення вікна."""
-    try:
-        import ctypes
-        from ctypes import wintypes
+    """Перемикає режим поверх інших вікон, який на Linux також залежить від WM/compositor."""
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
 
-        user32 = ctypes.windll.user32
-        user32.SetWindowPos.argtypes = [
-            wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT,
-        ]
-        user32.SetWindowPos.restype = wintypes.BOOL
-        hwnd = wintypes.HWND(int(widget.winId()))
-        after = wintypes.HWND(-1 if on else -2)  # HWND_TOPMOST / HWND_NOTOPMOST
-        user32.SetWindowPos(hwnd, after, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)  # NOSIZE|NOMOVE|NOACTIVATE
+            user32 = ctypes.windll.user32
+            user32.SetWindowPos.argtypes = [
+                wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT,
+            ]
+            user32.SetWindowPos.restype = wintypes.BOOL
+            hwnd = wintypes.HWND(int(widget.winId()))
+            after = wintypes.HWND(-1 if on else -2)
+            user32.SetWindowPos(hwnd, after, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
+        except Exception:
+            pass
+        return
+
+    try:
+        visible = widget.isVisible()
+        widget.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, bool(on))
+        if visible:
+            widget.show()
     except Exception:
         pass
 
