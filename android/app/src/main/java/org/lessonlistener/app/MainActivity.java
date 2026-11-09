@@ -7,6 +7,7 @@ import android.content.ClipboardManager;
 import android.content.ContentResolver;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.UriPermission;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -157,6 +158,7 @@ public final class MainActivity extends Activity {
                 statusText = "Запрос отменён при повороте экрана. Черновик сохранён — отправьте его ещё раз.";
             }
         }
+        releaseUnusedImagePermissions();
         loadBundledData();
         if (!profiles.containsKey(activeSubject) && !profiles.isEmpty()) {
             activeSubject = profiles.keySet().iterator().next();
@@ -388,6 +390,7 @@ public final class MainActivity extends Activity {
             Button clearPhoto = button("Убрать фото", false);
             clearPhoto.setOnClickListener(v -> {
                 selectedImage = null;
+                releaseUnusedImagePermissions();
                 imageName = "";
                 renderCurrentTab();
             });
@@ -1253,6 +1256,7 @@ public final class MainActivity extends Activity {
             try {
                 getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
             } catch (SecurityException ignored) { }
+            releaseUnusedImagePermissions();
             imageName = queryDisplayName(uri);
             renderCurrentTab();
         } else if (requestCode == REQ_EXPORT) {
@@ -1263,6 +1267,18 @@ public final class MainActivity extends Activity {
                 Toast.makeText(this, "Экспорт завершён", Toast.LENGTH_SHORT).show();
             } catch (Exception e) {
                 setStatus("Не удалось сохранить файл. Выберите другое место.", DANGER);
+            }
+        }
+    }
+
+    private void releaseUnusedImagePermissions() {
+        String keep = selectedImage == null ? null : selectedImage.toString();
+        for (UriPermission permission : getContentResolver().getPersistedUriPermissions()) {
+            if (StudySupport.shouldReleaseImagePermission(permission.getUri().toString(), keep)) {
+                try {
+                    getContentResolver().releasePersistableUriPermission(
+                            permission.getUri(), Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                } catch (SecurityException ignored) { }
             }
         }
     }
@@ -1449,6 +1465,10 @@ public final class MainActivity extends Activity {
         HttpURLConnection connection = activeConnection;
         if (connection != null) connection.disconnect();
         networkExecutor.shutdownNow();
+        if (isFinishing()) {
+            selectedImage = null;
+            releaseUnusedImagePermissions();
+        }
         super.onDestroy();
     }
 

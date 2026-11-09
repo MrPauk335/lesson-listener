@@ -26,6 +26,8 @@ The Gradle `copyStudyAssets` task reads the repository's existing `../profiles/*
 
 API keys and local preferences use app-private storage and are excluded from cloud backup and device transfer. Requests go directly to the selected provider only after an explicit user action. Keys are not included in logs or exported notes.
 
+Access to a selected image survives screen rotation. Removing or replacing it, or closing the activity, releases the persisted read permission; a fresh launch also clears stale grants.
+
 ## Android platform limits
 
 This port does not capture audio from other applications or the system mix. Android does not provide this app with the Windows-specific system audio capture, global hotkeys, always-on-top desktop overlay, or Windows startup integration. The app does not attempt to simulate those features.
