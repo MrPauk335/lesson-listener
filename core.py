@@ -110,7 +110,7 @@ DEFAULT_CONFIG = {
     "listen_seconds": 25,  # вчитель може спочатку питати інших учнів
     "student_name": "",
     "active_subject": "algebra",
-    "audio_category": "browser",
+    "audio_category": "cable",
     "language": "auto",    # auto / ru / uk
     "proxy": "",           # HTTP/SOCKS5 прокси для обхода блокировок Gemini в РФ
     "speak_lesson_start": True,  # Озвучивать голосом начало урока, предмет и время
@@ -1708,7 +1708,7 @@ class UniversalRecorder:
 
             for exe_name, pid in found_browsers.items():
                 title = BROWSER_EXES[exe_name]
-                browser_sources.append((f"🌐 {title} (вкладка уроку)", {"category": "browser", "pid": pid, "name": title}))
+                browser_sources.append((f"🌐 {title} (Загальний мікшер Win10)", {"category": "browser", "pid": pid, "name": title}))
 
         # 2. Мікрофони
         mic_sources = []
@@ -1722,7 +1722,7 @@ class UniversalRecorder:
         except Exception:
             pass
 
-        # 3. Віртуальні кабелі (ізоляція від Discord) та загальний звук системи
+        # 3. Віртуальні кабелі (100% апаратна ізоляція від Discord) та загальний звук системи
         cable_sources = []
         sys_sources = []
         default_idx = None
@@ -1736,17 +1736,25 @@ class UniversalRecorder:
                 name = d["name"]
                 nl = name.lower()
                 if any(k in nl for k in ["cable", "virtual", "voicemeeter", "line 1"]):
-                    cable_sources.append((f"🎛️ {name} (Ізольований кабель без Discord)", {"category": "cable", "dev": d}))
+                    if "cable input" in nl:
+                        lbl = f"🎛️ {name} — 100% Ізоляція від Discord (Рекомендовано)"
+                    elif "line 1" in nl:
+                        lbl = f"🎛️ {name} — Ізольований кабель без Discord"
+                    else:
+                        lbl = f"🎛️ {name} (Віртуальний кабель)"
+                    cable_sources.append((lbl, {"category": "cable", "dev": d}))
                 else:
                     item = (f"🔊 Системний звук: {name}", {"category": "system", "dev": d})
                     if d["index"] == default_idx:
                         sys_sources.insert(0, item)
                     else:
                         sys_sources.append(item)
+            # Пріоритет: чистий VB-CABLE Input або Line 1 на початку списку
+            cable_sources.sort(key=lambda item: 0 if "cable input" in item[0].lower() else (1 if "line 1" in item[0].lower() else 2))
         except Exception:
             pass
 
-        return browser_sources + cable_sources + mic_sources + sys_sources
+        return cable_sources + browser_sources + mic_sources + sys_sources
 
     def start(self, source_info: dict):
         self.stop()

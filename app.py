@@ -56,8 +56,8 @@ def normalize_status_text(text: str) -> str:
     t = re.sub(r'^(?:⚡\s*)+', '⚡ ', t)
     return t.strip()
 CATS = [
+    ("cable", "bolt", "Кабель (без Discord)"),
     ("browser", "globe", "Браузер"),
-    ("cable", "bolt", "Кабель"),
     ("mic", "mic", "Мікрофон"),
     ("system", "speaker", "Динаміки"),
 ]
