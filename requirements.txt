@@ -1,0 +1,9 @@
+PyAudioWPatch
+numpy
+faster-whisper
+keyboard
+google-genai
+requests
+proc-tap
+psutil
+PySide6-Essentials

@@ -1,0 +1,22 @@
+# Private API keys and local configs - NEVER COMMIT!
+config.json
+
+# Logs and runtime artifacts
+lesson.log
+*.log
+err.txt
+bench_results.json
+*.tmp
+
+# Python byte code and virtual environments
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+# IDE and OS
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini

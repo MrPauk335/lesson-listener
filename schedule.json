@@ -1,0 +1,103 @@
+{
+  "enabled": true,
+  "auto_switch_subject": true,
+  "auto_recess": true,
+  "detect_from_windows": true,
+  "detect_from_audio": true,
+  "bells": [
+    {
+      "num": 1,
+      "start": "08:30",
+      "end": "09:15"
+    },
+    {
+      "num": 2,
+      "start": "09:25",
+      "end": "10:10"
+    },
+    {
+      "num": 3,
+      "start": "10:20",
+      "end": "11:05"
+    },
+    {
+      "num": 4,
+      "start": "11:30",
+      "end": "12:15"
+    },
+    {
+      "num": 5,
+      "start": "12:40",
+      "end": "13:25"
+    },
+    {
+      "num": 6,
+      "start": "13:45",
+      "end": "14:30"
+    },
+    {
+      "num": 7,
+      "start": "14:40",
+      "end": "15:25"
+    },
+    {
+      "num": 8,
+      "start": "15:35",
+      "end": "16:20"
+    }
+  ],
+  "timetable": {
+    "Monday": [
+      "algebra",
+      "algebra",
+      "technologies",
+      "chemistry",
+      "chemistry",
+      "geography",
+      "geography",
+      ""
+    ],
+    "Tuesday": [
+      "algebra",
+      "geometry",
+      "physics",
+      "world_history",
+      "pe",
+      "english",
+      "english",
+      "stem"
+    ],
+    "Wednesday": [
+      "informatics",
+      "law",
+      "pe",
+      "biology",
+      "ukr_lang",
+      "ukr_lit",
+      "health",
+      ""
+    ],
+    "Thursday": [
+      "ukr_lang",
+      "pe",
+      "biology",
+      "history_ua",
+      "civic_ed",
+      "english",
+      "english",
+      ""
+    ],
+    "Friday": [
+      "algebra",
+      "geometry",
+      "ukr_lang",
+      "ukr_lit",
+      "physics",
+      "foreign_lit",
+      "art",
+      ""
+    ],
+    "Saturday": [],
+    "Sunday": []
+  }
+}
