@@ -47,6 +47,11 @@ GLYPH = {
     "play": "\uE768",
     "camera": "\uE722",
     "crop": "\uE7A8",
+    "note": "\uE8A5",
+    "notebook": "\uE7BC",
+    "folder": "\uE8B7",
+    "calendar": "\uE787",
+    "close": "\uE711",
 }
 
 
@@ -246,9 +251,9 @@ QFrame#Inner {{ background: {BG_CARD}; border: 1px solid {BORDER_SOFT}; border-r
 QPushButton {{ background: transparent; border: none; border-radius: 8px; padding: 6px 10px; }}
 QPushButton:hover {{ background: {BG_HOVER}; }}
 QPushButton:disabled {{ color: {MUTED}; }}
-QPushButton#Icon {{ padding: 0; min-width: 28px; max-width: 28px; min-height: 28px; max-height: 28px; }}
+QPushButton#Icon {{ padding: 0; min-width: 26px; max-width: 26px; min-height: 26px; max-height: 26px; border-radius: 7px; }}
 QPushButton#Icon:checked {{ background: {ACCENT_SOFT}; }}
-QPushButton#IconRecess:checked {{ background: #452405; border: 1px solid #d97706; border-radius: 8px; }}
+QPushButton#IconRecess:checked {{ background: #452405; border: 1px solid #d97706; border-radius: 7px; }}
 QPushButton#Seg {{ background: {BG_CARD}; border: 1px solid {BORDER}; border-radius: 10px; padding: 7px 8px; color: {MUTED_LIGHT}; }}
 QPushButton#Seg:hover {{ background: {BG_HOVER}; }}
 QPushButton#Seg:checked {{ background: {ACCENT_SOFT}; border: 1px solid #3f5fb5; color: #ffffff; }}
@@ -280,7 +285,7 @@ QComboBox::drop-down {{ border: none; width: 26px; }}
 QComboBox::down-arrow {{ image: url({chev}); width: 12px; height: 12px; }}
 QComboBox QAbstractItemView {{ background: {BG_CARD}; border: 1px solid {BORDER}; selection-background-color: {ACCENT_SOFT}; selection-color: #ffffff; outline: 0; padding: 4px; }}
 QComboBox QAbstractItemView::item {{ min-height: 26px; padding-left: 6px; }}
-QComboBox#Subject {{ background: transparent; border: none; font-weight: 600; font-size: 14px; padding: 4px 24px 4px 6px; }}
+QComboBox#Subject {{ background: transparent; border: none; font-weight: 600; font-size: 14px; padding: 4px 22px 4px 6px; }}
 QComboBox#Subject:hover {{ background: {BG_HOVER}; border-radius: 8px; }}
 
 QProgressBar {{ background: {BG_HOVER}; border: none; border-radius: 2px; }}

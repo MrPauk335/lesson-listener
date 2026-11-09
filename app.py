@@ -117,10 +117,16 @@ class ScreenSnipper(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
         # Малюємо заморожений екран точно на весь віджет (масштабується під логічний розмір екрана)
         painter.drawPixmap(self.rect(), self._screenshot)
         # Напівпрозоре затемнення фону
-        painter.fillRect(self.rect(), QColor(0, 0, 0, 110))
+        painter.fillRect(self.rect(), QColor(11, 15, 25, 125))
+
+        font = QFont("Segoe UI", 10, QFont.Weight.DemiBold)
+        painter.setFont(font)
+        fm = painter.fontMetrics()
 
         if self._origin and self._current:
             rect = QRect(self._origin, self._current).normalized()
@@ -129,13 +135,30 @@ class ScreenSnipper(QWidget):
                 painter.drawPixmap(rect, self._screenshot, src_rect)
                 pen = QPen(QColor("#38bdf8"), 2, Qt.PenStyle.SolidLine)
                 painter.setPen(pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
                 painter.drawRect(rect)
-                txt = f"{rect.width()} × {rect.height()} px — відпусти або Enter для розв'язку (Esc скасувати)"
-                painter.setPen(QColor("#ffffff"))
-                painter.drawText(rect.left() + 6, max(22, rect.top() - 6), txt)
+
+                txt = f"{rect.width()} × {rect.height()} px  ·  відпусти мишу або Enter  (Esc — скасувати)"
+                tw = fm.horizontalAdvance(txt) + 20
+                th = fm.height() + 10
+                bx = max(12, min(rect.left(), self.width() - tw - 12))
+                by = rect.top() - th - 8 if rect.top() > th + 14 else rect.bottom() + 8
+                badge_rect = QRectF(bx, by, tw, th)
+                painter.setPen(QPen(QColor("#38bdf8"), 1))
+                painter.setBrush(QColor(15, 23, 42, 220))
+                painter.drawRoundedRect(badge_rect, 6, 6)
+                painter.setPen(QColor("#f8fafc"))
+                painter.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, txt)
         else:
-            painter.setPen(QColor("#ffffff"))
-            painter.drawText(20, 35, "🎯 Затисни ліву кнопку миші та виділи рамкою завдання / тест • Esc для скасування")
+            txt = "Виділи рамкою завдання, формулу або слайд  ·  Esc або ПКМ — скасувати"
+            tw = fm.horizontalAdvance(txt) + 28
+            th = fm.height() + 14
+            badge_rect = QRectF((self.width() - tw) / 2, 24, tw, th)
+            painter.setPen(QPen(QColor("#38bdf8"), 1))
+            painter.setBrush(QColor(15, 23, 42, 220))
+            painter.drawRoundedRect(badge_rect, 8, 8)
+            painter.setPen(QColor("#f8fafc"))
+            painter.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, txt)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -219,8 +242,8 @@ class FloatingWidget(QWidget):
     def _icon_btn(self, glyph, tip, slot, checkable=False):
         b = QPushButton()
         b.setObjectName("Icon")
-        b.setIcon(T.glyph_icon(glyph, T.MUTED_LIGHT, T.ACCENT_HOVER))
-        b.setIconSize(QSize(16, 16))
+        b.setIcon(T.glyph_icon(glyph, T.MUTED_LIGHT, T.ACCENT_HOVER, size=15))
+        b.setIconSize(QSize(15, 15))
         b.setToolTip(tip)
         b.setCheckable(checkable)
         b.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -238,17 +261,17 @@ class FloatingWidget(QWidget):
         self.header = DragHeader()
         hl = QHBoxLayout(self.header)
         hl.setContentsMargins(0, 0, 0, 0)
-        hl.setSpacing(2)
+        hl.setSpacing(1)
         self.dot = QLabel()
         self.dot.setFixedSize(10, 10)
         hl.addWidget(self.dot)
-        hl.addSpacing(6)
+        hl.addSpacing(5)
         self.subject = QComboBox()
         self.subject.setObjectName("Subject")
         self.subject.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.subject.setToolTip("Предмет")
+        self.subject.setToolTip("Активний предмет")
         self.subject.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
-        self.subject.setMaximumWidth(230)
+        self.subject.setMaximumWidth(175)
         self.subject.activated.connect(self._on_subject_activated)
         hl.addWidget(self.subject)
         hl.addStretch(1)
@@ -258,7 +281,7 @@ class FloatingWidget(QWidget):
                                        lambda *_: c.open_current_meet(force=True))
         self.btn_snip = self._icon_btn("camera", "Показати область екрана (задачу / слайд / тест) — F9",
                                        lambda *_: c.start_screen_snip())
-        self.btn_notes = self._icon_btn("education", "Конспект уроку (відкрити записи та збережені слайди)",
+        self.btn_notes = self._icon_btn("note", "Конспект уроку (відкрити записи та збережені слайди)",
                                         lambda *_: c.open_current_lecture())
         self.btn_recess = self._icon_btn("coffee", "Перерва / Пауза — вимкнути прослуховування на зміні",
                                          lambda *_: c.toggle_recess(), checkable=True)
@@ -282,9 +305,9 @@ class FloatingWidget(QWidget):
         self.slide_bar.setObjectName("SlideBar")
         self.slide_bar.setStyleSheet("""
             QFrame#SlideBar {
-                background: rgba(14, 165, 233, 0.16);
-                border: 1px solid #38bdf8;
-                border-radius: 8px;
+                background: rgba(14, 165, 233, 0.14);
+                border: 1px solid rgba(56, 189, 248, 0.65);
+                border-radius: 9px;
             }
         """)
         sbl = QHBoxLayout(self.slide_bar)
@@ -292,7 +315,9 @@ class FloatingWidget(QWidget):
         sbl.setSpacing(8)
 
         self.lbl_slide_icon = QLabel()
-        self.lbl_slide_icon.setPixmap(T.glyph_icon("camera", "#38bdf8", size=15).pixmap(15, 15))
+        self.lbl_slide_icon.setFixedSize(18, 18)
+        self.lbl_slide_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_slide_icon.setPixmap(T.glyph_icon("camera", "#38bdf8", size=14).pixmap(14, 14))
         sbl.addWidget(self.lbl_slide_icon)
 
         self.lbl_slide_text = QLabel("Вчитель демонструє слайд / дошку")
@@ -300,14 +325,16 @@ class FloatingWidget(QWidget):
         self.lbl_slide_text.setWordWrap(True)
         sbl.addWidget(self.lbl_slide_text, 1)
 
-        self.btn_slide_capture = QPushButton("📸 Скріншот")
+        self.btn_slide_capture = QPushButton(" У конспект")
+        self.btn_slide_capture.setIcon(T.glyph_icon("camera", "#ffffff", size=12))
+        self.btn_slide_capture.setIconSize(QSize(12, 12))
         self.btn_slide_capture.setStyleSheet("""
             QPushButton {
                 background: #0284c7;
                 color: #ffffff;
                 border: none;
-                border-radius: 4px;
-                padding: 4px 8px;
+                border-radius: 6px;
+                padding: 4px 9px;
                 font-weight: 600;
                 font-size: 11px;
             }
@@ -317,16 +344,19 @@ class FloatingWidget(QWidget):
         self.btn_slide_capture.clicked.connect(lambda: c.accept_slide_capture())
         sbl.addWidget(self.btn_slide_capture)
 
-        self.btn_slide_dismiss = QPushButton("✕")
+        self.btn_slide_dismiss = QPushButton()
+        self.btn_slide_dismiss.setIcon(T.glyph_icon("close", "#94a3b8", size=10))
+        self.btn_slide_dismiss.setIconSize(QSize(10, 10))
+        self.btn_slide_dismiss.setFixedSize(22, 22)
+        self.btn_slide_dismiss.setToolTip("Приховати (не питати для цього слайда)")
         self.btn_slide_dismiss.setStyleSheet("""
             QPushButton {
                 background: transparent;
-                color: #94a3b8;
                 border: none;
-                font-size: 13px;
-                padding: 2px 4px;
+                border-radius: 5px;
+                padding: 0;
             }
-            QPushButton:hover { color: #f87171; }
+            QPushButton:hover { background: rgba(248, 113, 113, 0.18); }
         """)
         self.btn_slide_dismiss.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_slide_dismiss.clicked.connect(lambda: c.dismiss_slide_prompt())
@@ -543,9 +573,10 @@ class FloatingWidget(QWidget):
             w.setVisible(not on)
         if on:
             self.txt_deep.hide()
+            self.slide_bar.hide()
         else:
             self.txt_deep.setVisible(self.btn_more.isChecked())
-        self.btn_mini.setIcon(T.glyph_icon("chevron_down" if on else "chevron_up", T.MUTED_LIGHT, T.ACCENT_HOVER))
+        self.btn_mini.setIcon(T.glyph_icon("chevron_down" if on else "chevron_up", T.MUTED_LIGHT, T.ACCENT_HOVER, size=15))
         self.btn_mini.setToolTip("Розгорнути" if on else "Міні-режим")
         self.ctrl.cfg["mini_mode"] = on
         if not initial:
@@ -597,9 +628,10 @@ class FloatingWidget(QWidget):
         self.lbl_status.setFullText(clean)
 
     def show_slide_prompt(self, desc: str):
-        txt = f"📸 Слайд: {desc}. Зберегти в конспект?" if desc else "📸 Вчитель демонструє слайд. Зберегти в конспект?"
+        txt = f"На екрані: {desc}. Додати слайд у конспект?" if desc else "Вчитель показує слайд / дошку. Додати в конспект?"
         self.lbl_slide_text.setText(txt)
-        self.slide_bar.show()
+        if not self._mini:
+            self.slide_bar.show()
         self._slide_timer.start()
 
     def hide_slide_prompt(self):
@@ -634,10 +666,12 @@ class FloatingWidget(QWidget):
         self.btn_recess.setToolTip("Перерва активна — натисни ☕ щоб відновити урок" if on else
                                    "Перерва / Пауза — вимкнути прослуховування на зміні")
         if on:
-            self.btn_answer.setText("⏸️  ПЕРЕРВА  ·  Натисни ☕ щоб відновити")
+            self.btn_answer.setIcon(T.glyph_icon("coffee", "#ffffff", size=16))
+            self.btn_answer.setText("  ПЕРЕРВА  ·  Натисни ☕ щоб відновити")
             self.lbl_buf.setText("Пауза")
             self.level_bar.setValue(0)
         else:
+            self.btn_answer.setIcon(T.glyph_icon("bolt", "#ffffff", size=16))
             self.btn_answer.setText(f"  Відповісти  ·  {HOTKEY.upper()}")
         self.refresh_banner()
 
@@ -686,9 +720,9 @@ class SettingsPanel(QDialog):
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
         lay.addWidget(self.tabs)
-        self.tabs.addTab(self._scroll(self._build_memory_tab()), "Пам'ять уроку")
-        self.tabs.addTab(self._scroll(self._build_schedule_tab()), "📅 Розклад")
-        self.tabs.addTab(self._scroll(self._build_settings_tab()), "Налаштування")
+        self.tabs.addTab(self._scroll(self._build_memory_tab()), T.glyph_icon("note", T.MUTED_LIGHT, size=14), "Пам'ять уроку")
+        self.tabs.addTab(self._scroll(self._build_schedule_tab()), T.glyph_icon("calendar", T.MUTED_LIGHT, size=14), "Розклад")
+        self.tabs.addTab(self._scroll(self._build_settings_tab()), T.glyph_icon("gear", T.MUTED_LIGHT, size=14), "Налаштування")
 
     # ---------------- helpers
     @staticmethod
@@ -755,12 +789,14 @@ class SettingsPanel(QDialog):
         cn_lay = QHBoxLayout(card_notes)
         cn_lay.setContentsMargins(14, 10, 14, 10)
         cn_lay.setSpacing(10)
-        btn_open_lec = QPushButton("📄 Відкрити конспект уроку")
-        btn_open_lec.setObjectName("Primary")
+        btn_open_lec = QPushButton("  Відкрити конспект уроку")
+        btn_open_lec.setObjectName("Accent")
+        btn_open_lec.setIcon(T.glyph_icon("note", "#ffffff", size=14))
         btn_open_lec.clicked.connect(lambda *_: self.ctrl.open_current_lecture())
         cn_lay.addWidget(btn_open_lec)
-        btn_open_dir = QPushButton("📁 Папка всіх конспектів (lectures/)")
+        btn_open_dir = QPushButton("  Папка конспектів (lectures/)")
         btn_open_dir.setObjectName("Soft")
+        btn_open_dir.setIcon(T.glyph_icon("folder", T.MUTED_LIGHT, size=14))
         btn_open_dir.clicked.connect(lambda *_: self.ctrl.open_lectures_folder())
         cn_lay.addWidget(btn_open_dir)
         v.addWidget(card_notes)
@@ -778,8 +814,9 @@ class SettingsPanel(QDialog):
         btn_t.setObjectName("Soft")
         btn_t.clicked.connect(lambda *_: self.ctrl.save_teacher_name(self.ent_teacher.text()))
         row.addWidget(btn_t)
-        btn_imp = QPushButton("📋 Імпорт зі Щоденника")
+        btn_imp = QPushButton("  Імпорт зі Щоденника")
         btn_imp.setObjectName("Accent")
+        btn_imp.setIcon(T.glyph_icon("note", "#ffffff", size=14))
         btn_imp.clicked.connect(self._open_import_teachers_dialog)
         row.addWidget(btn_imp)
         cv.addLayout(row)
@@ -792,8 +829,9 @@ class SettingsPanel(QDialog):
         btn_m_save.setObjectName("Soft")
         btn_m_save.clicked.connect(lambda *_: self.ctrl.save_meet_url(self.ent_meet.text()))
         row_m.addWidget(btn_m_save)
-        btn_m_open = QPushButton("🚀 Відкрити")
+        btn_m_open = QPushButton("  Відкрити")
         btn_m_open.setObjectName("Accent")
+        btn_m_open.setIcon(T.glyph_icon("globe", "#ffffff", size=14))
         btn_m_open.clicked.connect(lambda *_: self.ctrl.open_current_meet(force=True))
         row_m.addWidget(btn_m_open)
         cv.addLayout(row_m)
@@ -1242,8 +1280,9 @@ class SettingsPanel(QDialog):
         self.cmb_dev = QComboBox()
         self.cmb_dev.activated.connect(lambda idx: c.start_source(idx))
         c4.addWidget(self.cmb_dev, 1)
-        b_scan = QPushButton("Оновити")
+        b_scan = QPushButton("  Оновити")
         b_scan.setObjectName("Soft")
+        b_scan.setIcon(T.glyph_icon("refresh", T.MUTED_LIGHT, size=13))
         b_scan.clicked.connect(lambda *_: c.refresh_sources())
         c4.addWidget(b_scan)
         v.addWidget(card4)
@@ -1706,9 +1745,11 @@ class LessonListenerApp(QObject):
 
         self.act_toggle = menu.addAction("Показати віджет")
         self.act_toggle.triggered.connect(lambda *_: self.widget.toggle_visibility())
-        act_answer = menu.addAction(f"Відповісти зараз  ({HOTKEY.upper()})")
+        act_answer = menu.addAction(T.glyph_icon("bolt", T.ACCENT, size=14), f"Відповісти зараз  ({HOTKEY.upper()})")
         act_answer.triggered.connect(lambda *_: self.on_trigger_answer())
-        act_meet = menu.addAction("🌐 Відкрити Google Meet уроку")
+        act_snip = menu.addAction(T.glyph_icon("camera", T.MUTED_LIGHT, size=14), "Показати область екрана  (F9)")
+        act_snip.triggered.connect(lambda *_: self.start_screen_snip())
+        act_meet = menu.addAction(T.glyph_icon("globe", T.MUTED_LIGHT, size=14), "Відкрити Google Meet уроку")
         act_meet.triggered.connect(lambda *_: self.open_current_meet(force=True))
 
         self.act_recess = menu.addAction("☕ Перерва (пауза на зміні)")
@@ -1731,19 +1772,19 @@ class LessonListenerApp(QObject):
         self.menu_subj = menu.addMenu("Предмет")
         self.menu_subj.aboutToShow.connect(self._fill_subject_menu)
 
-        act_lecture = menu.addAction("📚 Конспект уроку")
+        act_lecture = menu.addAction(T.glyph_icon("note", T.MUTED_LIGHT, size=14), "Конспект уроку")
         act_lecture.triggered.connect(lambda *_: self.open_current_lecture())
-        act_lectures_dir = menu.addAction("📁 Папка конспектів (lectures/)")
+        act_lectures_dir = menu.addAction(T.glyph_icon("folder", T.MUTED_LIGHT, size=14), "Папка конспектів (lectures/)")
         act_lectures_dir.triggered.connect(lambda *_: self.open_lectures_folder())
 
-        act_new = menu.addAction("Новий урок")
+        act_new = menu.addAction(T.glyph_icon("refresh", T.MUTED_LIGHT, size=14), "Новий урок")
         act_new.triggered.connect(lambda *_: self.on_start_new_lesson())
         self.act_top = menu.addAction("Поверх усіх вікон")
         self.act_top.setCheckable(True)
         self.act_top.setChecked(bool(self.cfg.get("topmost", True)))
         self.act_top.toggled.connect(lambda on: self.set_topmost(bool(on)))
         menu.addSeparator()
-        act_panel = menu.addAction("Пам'ять і налаштування…")
+        act_panel = menu.addAction(T.glyph_icon("gear", T.MUTED_LIGHT, size=14), "Пам'ять і налаштування…")
         act_panel.triggered.connect(lambda *_: self.open_panel())
         menu.addSeparator()
         act_quit = menu.addAction("Вийти")
@@ -2212,8 +2253,8 @@ class LessonListenerApp(QObject):
                 "id": sub_id,
                 "name": name,
                 "teacher_name": "",
-                "teacher_style": "Академічний стиль, українська мова",
-                "permanent_rules": ["Відповідати українською мовою"],
+                "teacher_style": "",
+                "permanent_rules": [],
                 "cumulative_terms": [],
                 "past_lessons": [],
             })
@@ -2291,7 +2332,7 @@ class LessonListenerApp(QObject):
     def save_rules(self, raw: str):
         lines = [line.strip() for line in (raw or "").split("\n") if line.strip()]
         self.active_profile["permanent_rules"] = lines
-        self.active_profile["teacher_style"] = lines[0] if lines else "Академічний"
+        self.active_profile["teacher_style"] = lines[0] if lines else ""
         self.prof_mgr.save(self.active_profile)
         self.context.teacher_style = self.active_profile["teacher_style"]
         self._refresh_live_views()

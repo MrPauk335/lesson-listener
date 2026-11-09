@@ -1,5 +1,6 @@
 # Private API keys and local configs - NEVER COMMIT!
 config.json
+lectures/
 
 # Logs and runtime artifacts
 lesson.log
