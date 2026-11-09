@@ -54,6 +54,11 @@ on Windows; `${XDG_DATA_HOME:-~/.local/share}/lesson-listener` on Linux.
 before uninstalling. Windows source runs retain their legacy data next to `app.py`;
 Linux copies missing legacy data on first run without overwriting existing user state.
 
+Current source builds save desktop configuration, schedules and subject profiles through
+a temporary file in the same directory, then replace the previous file atomically.
+A failed serialization or write leaves the last saved file intact; this is not a
+replacement for backing up your data.
+
 ## Rebuilding
 
 Always build on the target OS. PyInstaller cannot cross-compile Windows from Linux.
