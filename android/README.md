@@ -28,6 +28,8 @@ API keys and local preferences use app-private storage and are excluded from clo
 
 Access to a selected image survives screen rotation. Removing or replacing it, or closing the activity, releases the persisted read permission; a fresh launch also clears stale grants.
 
+Current source builds isolate each AI request: canceling and immediately retrying cannot let an older reply overwrite the new result or clear the new request's audio/network resources.
+
 ## Android platform limits
 
 This port does not capture audio from other applications or the system mix. Android does not provide this app with the Windows-specific system audio capture, global hotkeys, always-on-top desktop overlay, or Windows startup integration. The app does not attempt to simulate those features.
