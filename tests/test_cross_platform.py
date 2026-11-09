@@ -67,6 +67,22 @@ def _schedule_file(directory, *, enabled=True):
     return str(path)
 
 
+def _release_qt_application(qt_app):
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from PySide6.QtGui import QFontDatabase
+    import shiboken6
+
+    for widget in qt_app.topLevelWidgets():
+        widget.close()
+        widget.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    qt_app.processEvents()
+    QFontDatabase.removeAllApplicationFonts()
+    qt_app.quit()
+    shiboken6.delete(qt_app)
+    QFontDatabase.removeAllApplicationFonts()
+
+
 @contextlib.contextmanager
 def _isolated_app_state():
     with tempfile.TemporaryDirectory(prefix="lesson-listener-ui-") as data_dir:
@@ -163,6 +179,8 @@ class CoreReleaseTests(unittest.TestCase):
         repo_root = str(Path(__file__).resolve().parents[1])
         child = r'''
 import json
+import contextlib
+import logging
 import os
 import shutil
 import sys
@@ -174,8 +192,24 @@ import numpy
 import psutil
 import requests
 
+def release_qt_application(qt_app):
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from PySide6.QtGui import QFontDatabase
+    import shiboken6
+
+    for widget in qt_app.topLevelWidgets():
+        widget.close()
+        widget.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    qt_app.processEvents()
+    QFontDatabase.removeAllApplicationFonts()
+    qt_app.quit()
+    shiboken6.delete(qt_app)
+    QFontDatabase.removeAllApplicationFonts()
+
 repo_root = sys.argv[1]
-with tempfile.TemporaryDirectory(prefix="lesson-listener-frozen-") as root:
+with tempfile.TemporaryDirectory(prefix="lesson-listener-frozen-") as root, contextlib.ExitStack() as cleanup:
+    cleanup.callback(logging.shutdown)
     root = Path(root)
     source = root / "source"
     resources = root / "resources"
@@ -212,6 +246,7 @@ with tempfile.TemporaryDirectory(prefix="lesson-listener-frozen-") as root:
     import app as desktop_app
 
     qt_app = QApplication.instance() or QApplication([])
+    cleanup.callback(release_qt_application, qt_app)
     qt_app.setQuitOnLastWindowClosed(False)
     with mock.patch.object(core, "pyaudio", None), \
          mock.patch.object(desktop_app.LessonListenerApp, "_ensure_shortcuts", return_value=None), \
@@ -250,6 +285,12 @@ class DesktopReleaseTests(unittest.TestCase):
     def setUpClass(cls):
         cls.qt_app = QApplication.instance() or QApplication([])
         cls.qt_app.setQuitOnLastWindowClosed(False)
+
+    @classmethod
+    def tearDownClass(cls):
+        _release_qt_application(cls.qt_app)
+        cls.qt_app = None
+        super().tearDownClass()
 
     def _construct_controller(self):
         with mock.patch.object(core, "pyaudio", None):
@@ -431,6 +472,10 @@ class LinuxAudioBackendTests(unittest.TestCase):
         self.assertEqual(recorder.available_seconds(), 0)
         self.assertEqual(recorder.level, 0)
 def tearDownModule():
+    from PySide6.QtGui import QFontDatabase
+
+    QFontDatabase.removeAllApplicationFonts()
+    logging.shutdown()
     for name, original in (
         ("LESSON_LISTENER_DATA_DIR", _ORIGINAL_DATA_DIR),
         ("XDG_DATA_HOME", _ORIGINAL_XDG_DATA_HOME),
