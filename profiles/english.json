@@ -2,17 +2,9 @@
   "id": "english",
   "name": "🌍 Англійська мова",
   "teacher_name": "Кукса Карина Сергіївна",
-  "teacher_style": "Відповіді англійською мовою або точний переклад українською. Правильні граматичні часи.",
-  "permanent_rules": [
-    "Граматично повні речення",
-    "Контроль за часовими формами дієслів"
-  ],
-  "cumulative_terms": [
-    "Present Perfect",
-    "Passive Voice",
-    "Conditionals",
-    "Infinitive"
-  ],
+  "teacher_style": "",
+  "permanent_rules": [],
+  "cumulative_terms": [],
   "past_lessons": [],
   "meet_url": "https://meet.google.com/eok-dawb-bxd?authuser=0"
 }

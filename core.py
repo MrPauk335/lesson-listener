@@ -975,8 +975,8 @@ class ProfileManager:
                 "id": sub_id,
                 "name": sub_id.capitalize(),
                 "teacher_name": "",
-                "teacher_style": "Академічний стиль, відповіді українською мовою",
-                "permanent_rules": ["Відповідати українською мовою", "Чітко та по суті"],
+                "teacher_style": "",
+                "permanent_rules": [],
                 "cumulative_terms": [],
                 "past_lessons": []
             }
@@ -1123,11 +1123,12 @@ class LessonContext:
                     + "\n".join(qa_lines)
                 )
 
+            style_str = self.teacher_style if self.teacher_style else "Академічний"
             return (
                 f"ПРЕДМЕТ: {sub_name}{teacher_str}\n"
                 f"ТЕМА УРОКУ: {self.topic}\n"
-                f"ВИМОГИ ТА СТИЛЬ ВЧИТЕЛЯ: {self.teacher_style}\n"
-                f"ПРАВИЛА: {rules_str or 'Відповідати українською, лаконічно, без зайвої води'}\n"
+                f"ВИМОГИ ТА СТИЛЬ ВЧИТЕЛЯ: {style_str}\n"
+                f"ПРАВИЛА: {rules_str or 'Відповідати чітко, лаконічно, без зайвої води'}\n"
                 f"{past_str}\n"
                 f"ТЕРМІНИ: {terms_str}\n"
                 f"ХІД ЦЬОГО УРОКУ:\n{events_str}{qa_str}"
@@ -1334,6 +1335,30 @@ class GeminiEngine:
             self.session.proxies = {"http": proxy, "https": proxy}
             logging.info(f"Налаштовано проксі для API: {proxy}")
         self.student_name = student_name or self.cfg.get("student_name", "")
+
+    @property
+    def answer_model(self) -> str:
+        return self.cfg.get("answer_model", "gemini-3.5-flash-lite")
+
+    @answer_model.setter
+    def answer_model(self, val: str):
+        self.cfg["answer_model"] = val
+
+    @property
+    def bg_model(self) -> str:
+        return self.cfg.get("background_model", "gemini-3.5-flash-lite")
+
+    @bg_model.setter
+    def bg_model(self, val: str):
+        self.cfg["background_model"] = val
+
+    @property
+    def api_key(self) -> str:
+        return self.cfg.get("gemini_api_key", "")
+
+    @api_key.setter
+    def api_key(self, val: str):
+        self.cfg["gemini_api_key"] = val
 
     def set_config(self, api_key: str, answer_model: str, bg_model: str, student_name: str = None, **kwargs):
         self.cfg["gemini_api_key"] = (api_key or "").strip()

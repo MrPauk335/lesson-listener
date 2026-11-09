@@ -2,18 +2,9 @@
   "id": "ukr_lang",
   "name": "🇺🇦 Українська мова",
   "teacher_name": "Мазко Марія Вячеславівна",
-  "teacher_style": "Граматичний та літературний аналіз. Частини мови, члени речення, правила орфографії та пунктуації.",
-  "permanent_rules": [
-    "Бездоганна українська мова",
-    "Чітко називати граматичні правила"
-  ],
-  "cumulative_terms": [
-    "Підмет",
-    "Присудок",
-    "Дієприслівник",
-    "Складнопідрядне речення",
-    "Апостроф"
-  ],
+  "teacher_style": "",
+  "permanent_rules": [],
+  "cumulative_terms": [],
   "past_lessons": [],
   "meet_url": "https://meet.google.com/amf-vsmq-vyp?authuser=0"
 }

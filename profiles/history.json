@@ -2,18 +2,9 @@
   "id": "history",
   "name": "📜 Історія України",
   "teacher_name": "",
-  "teacher_style": "Точні дати, причинно-наслідкові зв’язки, історичні діячі та наслідки подій.",
-  "permanent_rules": [
-    "Відповідати українською мовою",
-    "Називати точні дати та роки"
-  ],
-  "cumulative_terms": [
-    "Універсал",
-    "Гетьманщина",
-    "Козацтво",
-    "Реформа",
-    "Конституція"
-  ],
+  "teacher_style": "",
+  "permanent_rules": [],
+  "cumulative_terms": [],
   "past_lessons": [],
   "meet_url": "https://meet.google.com/czx-jtno-fcf?authuser=0"
 }
