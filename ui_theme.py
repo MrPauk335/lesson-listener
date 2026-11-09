@@ -2,8 +2,8 @@
 import os
 import tempfile
 
-from PySide6.QtCore import (Property, QAbstractAnimation, QEasingCurve, QPropertyAnimation, QRectF, Qt)
-from PySide6.QtGui import QColor, QFont, QIcon, QLinearGradient, QPainter, QPen, QPixmap
+from PySide6.QtCore import (Property, QAbstractAnimation, QEasingCurve, QPointF, QPropertyAnimation, QRectF, Qt)
+from PySide6.QtGui import QColor, QFont, QIcon, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QAbstractButton, QLabel, QSizePolicy
 
 # ---------------------------------------------------------------- палітра
@@ -55,8 +55,64 @@ GLYPH = {
 }
 
 
+def _draw_vector_glyph(p: QPainter, glyph: str, s: float, col: str) -> bool:
+    """Малює векторні іконки без залежності від шрифту (конспект-листок, зошит)."""
+    pen = QPen(QColor(col), max(1.15, s * 0.088), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+
+    if glyph in ("note", "sheet"):
+        # Листок паперу конспекту із загнутим правим верхнім куточком та рядками тексту
+        pad = s * 0.12
+        x = pad + s * 0.04
+        y = pad
+        w = s - pad * 2 - s * 0.08
+        h = s - pad * 2
+        fold = w * 0.38
+
+        path = QPainterPath()
+        path.moveTo(x, y)
+        path.lineTo(x + w - fold, y)
+        path.lineTo(x + w, y + fold)
+        path.lineTo(x + w, y + h)
+        path.lineTo(x, y + h)
+        path.closeSubpath()
+        p.drawPath(path)
+
+        # Лінія загину куточка
+        p.drawLine(QPointF(x + w - fold, y), QPointF(x + w - fold, y + fold))
+        p.drawLine(QPointF(x + w - fold, y + fold), QPointF(x + w, y + fold))
+
+        # Горизонтальні рядки тексту конспекту
+        lx1 = x + w * 0.22
+        lx2 = x + w * 0.78
+        p.drawLine(QPointF(lx1, y + h * 0.44), QPointF(lx2, y + h * 0.44))
+        p.drawLine(QPointF(lx1, y + h * 0.64), QPointF(lx2, y + h * 0.64))
+        p.drawLine(QPointF(lx1, y + h * 0.82), QPointF(x + w * 0.58, y + h * 0.82))
+        return True
+
+    elif glyph == "notebook":
+        # Зошит / блокнот із пружиною зліва та рядками тексту
+        pad = s * 0.12
+        x = pad + s * 0.08
+        y = pad
+        w = s - pad * 2 - s * 0.08
+        h = s - pad * 2
+        p.drawRoundedRect(QRectF(x, y, w, h), 1.5, 1.5)
+        for ry in (y + h * 0.22, y + h * 0.44, y + h * 0.66, y + h * 0.86):
+            p.drawLine(QPointF(x - s * 0.08, ry), QPointF(x + s * 0.05, ry))
+        lx1 = x + w * 0.24
+        lx2 = x + w * 0.78
+        p.drawLine(QPointF(lx1, y + h * 0.32), QPointF(lx2, y + h * 0.32))
+        p.drawLine(QPointF(lx1, y + h * 0.54), QPointF(lx2, y + h * 0.54))
+        p.drawLine(QPointF(lx1, y + h * 0.75), QPointF(x + w * 0.60, y + h * 0.75))
+        return True
+
+    return False
+
+
 def glyph_icon(glyph: str, color: str = MUTED_LIGHT, color_on: str = None, size: int = 16) -> QIcon:
-    """Іконка з гліфа Segoe MDL2: чіткий рендер на HiDPI, окремий колір для стану checked."""
+    """Іконка: чіткий векторний рендер або гліф Segoe MDL2 на HiDPI."""
     icon = QIcon()
     scale = 2
     for state, col in ((QIcon.State.Off, color), (QIcon.State.On, color_on or color)):
@@ -64,12 +120,16 @@ def glyph_icon(glyph: str, color: str = MUTED_LIGHT, color_on: str = None, size:
         pm.setDevicePixelRatio(scale)
         pm.fill(Qt.GlobalColor.transparent)
         p = QPainter(pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
-        font = QFont(ICON_FONT)
-        font.setPixelSize(size)
-        p.setFont(font)
-        p.setPen(QColor(col))
-        p.drawText(QRectF(0, 0, size, size), Qt.AlignmentFlag.AlignCenter, GLYPH.get(glyph, glyph))
+
+        # Спочатку перевіряємо власні чіткі векторні іконки (конспект, зошит)
+        if not _draw_vector_glyph(p, glyph, size, col):
+            font = QFont(ICON_FONT)
+            font.setPixelSize(size)
+            p.setFont(font)
+            p.setPen(QColor(col))
+            p.drawText(QRectF(0, 0, size, size), Qt.AlignmentFlag.AlignCenter, GLYPH.get(glyph, glyph))
         p.end()
         icon.addPixmap(pm, QIcon.Mode.Normal, state)
         icon.addPixmap(pm, QIcon.Mode.Active, state)
