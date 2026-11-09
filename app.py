@@ -28,7 +28,7 @@ from core import (ANSWER_MODELS, BG_MODELS, DEFAULT_BELLS, DEFAULT_CONFIG, DEFAU
                   ScheduleManager, UniversalRecorder, aloud_to_html, audio_to_wav_bytes, clean_math,
                   detect_subject_from_text, detect_subject_from_windows, ensure_start_menu_shortcut,
                   find_chrome_exe, find_school_chrome_profile, get_active_window_title,
-                  is_windows_autostart_enabled, load_config, open_lesson_link, open_meet_in_school_profile,
+                  is_lesson_already_open, is_windows_autostart_enabled, load_config, open_lesson_link, open_meet_in_school_profile,
                   open_windows_sound_routing, parse_teacher_text_to_pairs, save_config,
                   set_windows_autostart, speak_text)
 
@@ -1425,14 +1425,36 @@ class LessonListenerApp(QObject):
                 self._spoken_lessons_today.add(speak_key)
                 prof = self.prof_mgr.get(sub_id) if hasattr(self, "prof_mgr") else self.active_profile
                 sub_name = prof.get("name", sub_id) if prof else self.active_profile.get("name", sub_id)
-                start_time = st.get("start") or datetime.datetime.now().strftime("%H:%M")
-                lang = self.cfg.get("language", "auto")
-                if lang == "uk":
-                    speech = f"Початок уроку: {sub_name}. Час {start_time}."
+                meet_url = prof.get("meet_url", "") if prof else ""
+
+                # Якщо учень вже зайшов на урок (Meet або Zoom вже відкриті) — не озвучувати
+                if is_lesson_already_open(meet_url, sub_id, sub_name):
+                    logging.info(f"Учень вже зайшов на урок {sub_name} ({meet_url}). Оголошення початку уроку пропущено.")
                 else:
-                    speech = f"Начало урока: {sub_name}. Время {start_time}."
-                logging.info(f"Оголошення початку уроку: {speech}")
-                speak_text(speech, lang=lang)
+                    # Перевіряємо, чи урок розпочався щойно (протягом останніх 3 хвилин)
+                    start_str = st.get("start", "")
+                    should_speak = True
+                    if start_str and ":" in start_str:
+                        try:
+                            now = datetime.datetime.now()
+                            sh, sm = map(int, start_str.split(":"))
+                            diff_min = (now.hour * 60 + now.minute) - (sh * 60 + sm)
+                            # Якщо урок розпочався понад 3 хвилини тому — учень вже займається, не перебиваємо
+                            if diff_min > 3:
+                                should_speak = False
+                                logging.info(f"Урок {sub_name} розпочався {diff_min} хв тому. Оголошення початку уроку пропущено.")
+                        except Exception:
+                            pass
+
+                    if should_speak:
+                        start_time = st.get("start") or datetime.datetime.now().strftime("%H:%M")
+                        lang = self.cfg.get("language", "auto")
+                        if lang == "uk":
+                            speech = f"Початок уроку: {sub_name}. Час {start_time}."
+                        else:
+                            speech = f"Начало урока: {sub_name}. Время {start_time}."
+                        logging.info(f"Оголошення початку уроку: {speech}")
+                        speak_text(speech, lang=lang)
 
     def _set_busy(self, busy):
         self.busy = busy
@@ -1868,6 +1890,14 @@ class LessonListenerApp(QObject):
 
         today_key = (datetime.date.today().isoformat(), st.get("lesson_num", 0), sub_id)
         if not force and today_key in self._opened_meets_today:
+            return False
+
+        sub_name = prof.get("name", sub_id) if prof else sub_id
+
+        # Перевірка: якщо учень вже зайшов на урок (вкладка Meet або Zoom відкрита) — не відкривати повторно
+        if not force and is_lesson_already_open(meet_url, sub_id, sub_name):
+            self._opened_meets_today.add(today_key)
+            logging.info(f"Урок {sub_name} ({meet_url}) вже відкрито в браузері/Zoom. Повторне відкриття пропущено.")
             return False
 
         self._opened_meets_today.add(today_key)

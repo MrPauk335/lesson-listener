@@ -7,6 +7,7 @@ Lesson Listener — бекенд без GUI: аудіозахоплення, Gem
 - Миттєва відповідь через Gemini Flash-Lite (1-2 сек).
 """
 import collections
+import csv
 import ctypes
 import datetime
 import io
@@ -462,6 +463,50 @@ def open_lesson_link(url: str, chrome_profile: str = None) -> bool:
     except Exception as e:
         logging.error(f"Помилка відкриття сесії {url}: {e}")
         return False
+
+
+def is_lesson_already_open(meet_url: str = "", subject_id: str = "", subject_name: str = "") -> bool:
+    """Перевіряє, чи учень вже приєднався до уроку (вкладка Meet у Chrome або активний дзвінок Zoom)."""
+    meet_code = ""
+    if meet_url and "meet.google.com/" in meet_url:
+        meet_code = meet_url.split("meet.google.com/")[1].split("?")[0].strip().lower()
+
+    # 1. Швидка перевірка активного вікна користувача
+    fg_title = get_active_window_title().lower()
+    if fg_title:
+        if meet_code and meet_code in fg_title:
+            return True
+        if "meet" in fg_title and ((subject_name and subject_name.lower() in fg_title) or "google meet" in fg_title):
+            return True
+        if "zoom" in fg_title and ("meeting" in fg_title or "конференц" in fg_title):
+            return True
+
+    # 2. Швидке сканування вікон браузерів та Zoom через tasklist
+    for exe in ["chrome.exe", "zoom.exe", "msedge.exe", "browser.exe"]:
+        try:
+            res = subprocess.run(
+                ["tasklist", "/v", "/fi", f"imagename eq {exe}", "/fo", "csv"],
+                capture_output=True, text=True, errors="ignore", timeout=2
+            )
+            if not res.stdout:
+                continue
+            reader = csv.reader(io.StringIO(res.stdout))
+            for row in reader:
+                if len(row) >= 9:
+                    title = row[8].lower()
+                    if meet_code and meet_code in title:
+                        return True
+                    if "meet:" in title or "meet -" in title:
+                        if not meet_code or meet_code in title:
+                            return True
+                    if exe == "zoom.exe" and ("zoom meeting" in title or "конференция zoom" in title or "zoom" in title):
+                        return True
+                    if subject_name and subject_name.lower() in title and any(k in title for k in ["meet", "zoom", "teams"]):
+                        return True
+        except Exception:
+            pass
+
+    return False
 
 
 def speak_text(text: str, lang: str = "ru"):
