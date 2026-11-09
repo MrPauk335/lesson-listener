@@ -14,5 +14,7 @@
   "listen_seconds": 25,
   "student_name": "",
   "active_subject": "algebra",
-  "audio_category": "mic"
+  "audio_category": "browser",
+  "language": "auto",
+  "proxy": ""
 }

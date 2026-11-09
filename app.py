@@ -28,8 +28,8 @@ from core import (ANSWER_MODELS, BG_MODELS, DEFAULT_BELLS, DEFAULT_CONFIG, DEFAU
                   ScheduleManager, UniversalRecorder, aloud_to_html, audio_to_wav_bytes, clean_math,
                   detect_subject_from_text, detect_subject_from_windows, find_chrome_exe,
                   find_school_chrome_profile, get_active_window_title, load_config,
-                  open_meet_in_school_profile, open_windows_sound_routing, parse_teacher_text_to_pairs,
-                  save_config)
+                  open_lesson_link, open_meet_in_school_profile, open_windows_sound_routing,
+                  parse_teacher_text_to_pairs, save_config)
 
 M = 14        # поле навколо картки під тінь
 RADIUS = 16
@@ -149,7 +149,7 @@ class FloatingWidget(QWidget):
         hl.addStretch(1)
         self.btn_new = self._icon_btn("refresh", "Новий урок — очистити буфер звуку й тему",
                                       lambda *_: c.on_start_new_lesson())
-        self.btn_meet = self._icon_btn("globe", "Відкрити Google Meet цього уроку (у навчальному профілі Chrome)",
+        self.btn_meet = self._icon_btn("globe", "Відкрити урок (Google Meet / Zoom / посилання)",
                                        lambda *_: c.open_current_meet(force=True))
         self.btn_recess = self._icon_btn("coffee", "Перерва / Пауза — вимкнути прослуховування на зміні",
                                          lambda *_: c.toggle_recess(), checkable=True)
@@ -738,7 +738,7 @@ class SettingsPanel(QDialog):
         _sched_tg("Увімкнути розумний розклад дзвінків та уроків", "enabled")
         _sched_tg("Авто-вмикання перерви (☕ пауза запису на зміні)", "auto_recess")
         _sched_tg("Авто-перемикання предмета за розкладом дзвінків", "auto_switch_subject")
-        _sched_tg("Авто-відкриття Google Meet уроку (у навчальному профілі Chrome)", "auto_open_meet")
+        _sched_tg("Авто-відкриття уроку за розкладом (Meet / Zoom / Сферум)", "auto_open_meet")
         _sched_tg("Зчитувати предмет із заголовка Meet / Zoom / браузера", "detect_from_windows")
         _sched_tg("ШІ-розпізнавання перерви та предмета з голосу вчителя", "detect_from_audio")
         v.addWidget(card_tg)
@@ -839,6 +839,30 @@ class SettingsPanel(QDialog):
         cp.addLayout(prow)
         v.addWidget(card_p)
 
+        # 0.5. Регіон та мова суфлера
+        v.addWidget(self._section("Мова підказок та регіональна адаптація"))
+        card_lang = self._card()
+        clang = QVBoxLayout(card_lang)
+        clang.setContentsMargins(14, 12, 14, 12)
+        clang.setSpacing(8)
+        lrow = QHBoxLayout()
+        lrow.addWidget(QLabel("Мова відповідей та термінів"), 1)
+        self.cmb_lang = QComboBox()
+        self.cmb_lang.addItem("Авто (визначати за мовою уроку)", "auto")
+        self.cmb_lang.addItem("Русский (RU) — адаптация для РФ/СНГ", "ru")
+        self.cmb_lang.addItem("Українська (UK) — за замовчуванням", "uk")
+        cur_lang = cfg.get("language", "auto")
+        idx_lang = self.cmb_lang.findData(cur_lang)
+        self.cmb_lang.setCurrentIndex(idx_lang if idx_lang >= 0 else 0)
+        self.cmb_lang.currentIndexChanged.connect(lambda: c.set_option("language", self.cmb_lang.currentData()))
+        lrow.addWidget(self.cmb_lang)
+        clang.addLayout(lrow)
+        hint_lang = QLabel("У режимі RU відповіді формуються російською, підтримуються предмети програми РФ (русский язык, литература, история, обществознание тощо).")
+        hint_lang.setObjectName("Muted")
+        hint_lang.setWordWrap(True)
+        clang.addWidget(hint_lang)
+        v.addWidget(card_lang)
+
         # 1. OpenRouter (Nemotron 3 Ultra 550B, Gemma 4, etc.)
         v.addWidget(self._section("OpenRouter (Nemotron 3 Ultra 550B · Gemma 4 · Free)"))
         card_or = self._card()
@@ -936,6 +960,18 @@ class SettingsPanel(QDialog):
             lambda: c.set_option("answer_model", self.cmb_model.currentText().strip()))
         mrow.addWidget(self.cmb_model)
         cv.addLayout(mrow)
+        prow_proxy = QHBoxLayout()
+        prow_proxy.addWidget(QLabel("Проксі для РФ / обходу блокувань (HTTP/SOCKS)"), 1)
+        self.ent_proxy = QLineEdit(cfg.get("proxy", ""))
+        self.ent_proxy.setPlaceholderText("напр. http://127.0.0.1:10809 (v2ray, clash, vpn)")
+        self.ent_proxy.setMinimumWidth(230)
+        self.ent_proxy.editingFinished.connect(lambda: c.set_option("proxy", self.ent_proxy.text().strip()))
+        prow_proxy.addWidget(self.ent_proxy)
+        cv.addLayout(prow_proxy)
+        hint_ru = QLabel("ℹ️ Якщо Gemini заблоковано в РФ (код 403), суфлер автоматично перемикається на OpenRouter або Groq.")
+        hint_ru.setObjectName("Muted")
+        hint_ru.setWordWrap(True)
+        cv.addWidget(hint_ru)
         v.addWidget(card)
 
         v.addWidget(self._section("Робота суфлера"))
@@ -1084,6 +1120,13 @@ class SettingsPanel(QDialog):
         self.sld_op.setValue(int(cfg.get("widget_opacity", 100)))
         self.sld_op.blockSignals(False)
         self.lbl_op.setText(f"{self.sld_op.value()}%")
+        if hasattr(self, "cmb_lang"):
+            self.cmb_lang.blockSignals(True)
+            idx_l = self.cmb_lang.findData(cfg.get("language", "auto"))
+            self.cmb_lang.setCurrentIndex(idx_l if idx_l >= 0 else 0)
+            self.cmb_lang.blockSignals(False)
+        if hasattr(self, "ent_proxy"):
+            self.ent_proxy.setText(cfg.get("proxy", ""))
 
     def refresh_key_state(self):
         gemini_ok = bool(self.ctrl.cfg.get("gemini_api_key"))
@@ -1766,14 +1809,14 @@ class LessonListenerApp(QObject):
         self.set_status("Google Meet збережено в профіль ✔")
 
     def open_current_meet(self, force=False):
-        """Відкриває Google Meet поточного уроку в навчальному профілі Chrome."""
+        """Відкриває посилання (Google Meet / Zoom / Сферум) поточного уроку."""
         st = self.schedule_mgr.get_status(prof_mgr=self.prof_mgr) if hasattr(self, "schedule_mgr") else {}
         sub_id = st.get("subject_id") or self.active_profile.get("id")
         prof = self.prof_mgr.get(sub_id) if hasattr(self, "prof_mgr") else self.active_profile
         meet_url = prof.get("meet_url", "")
         if not meet_url:
             if force:
-                self.set_status("⚠️ Для цього предмета ще не вказано посилання на Meet", warn=True)
+                self.set_status("⚠️ Для цього предмета ще не вказано посилання на Meet / Zoom", warn=True)
             return False
 
         today_key = (datetime.date.today().isoformat(), st.get("lesson_num", 0), sub_id)
@@ -1781,14 +1824,14 @@ class LessonListenerApp(QObject):
             return False
 
         self._opened_meets_today.add(today_key)
-        res = open_meet_in_school_profile(meet_url, self.cfg.get("chrome_profile"))
+        res = open_lesson_link(meet_url, self.cfg.get("chrome_profile"))
         if res:
             sub_name = prof.get("name", sub_id)
-            self.set_status(f"🚀 Відкрито Google Meet: {sub_name}")
+            self.set_status(f"🚀 Відкрито урок ({sub_name})")
             if self.tray is not None and not self.widget.isVisible():
                 self.tray.showMessage(
                     "Lesson Listener",
-                    f"Урок розпочався! Відкрито Google Meet: {sub_name}",
+                    f"Урок розпочався! Відкрито посилання: {sub_name}",
                     QSystemTrayIcon.MessageIcon.Information,
                     3500
                 )
