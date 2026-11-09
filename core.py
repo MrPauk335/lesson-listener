@@ -14,6 +14,8 @@ import json
 import logging
 import os
 import re
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -330,6 +332,54 @@ def detect_subject_from_windows() -> str:
     return ""
 
 
+def find_chrome_exe() -> str:
+    """Знаходить шлях до виконуваного файлу Google Chrome."""
+    candidates = [
+        os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+        os.path.expandvars(r"%PROGRAMFILES%\Google\Chrome\Application\chrome.exe"),
+        os.path.expandvars(r"%PROGRAMFILES(X86)%\Google\Chrome\Application\chrome.exe"),
+    ]
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    w = shutil.which("chrome")
+    return w or "chrome"
+
+
+def find_school_chrome_profile() -> str:
+    """Знаходить директорію навчального профілю Chrome (наприклад, Profile 3)."""
+    local_state_path = os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data\Local State")
+    if os.path.isfile(local_state_path):
+        try:
+            with open(local_state_path, "r", encoding="utf-8") as f:
+                ls = json.load(f)
+            cache = ls.get("profile", {}).get("info_cache", {})
+            for pdir, info in cache.items():
+                uname = (info.get("user_name") or "").lower()
+                name = (info.get("name") or "").lower()
+                if "suzirya" in uname or "suzirya" in name or "учебн" in name or "school" in name:
+                    return pdir
+        except Exception:
+            pass
+    return "Profile 3"
+
+
+def open_meet_in_school_profile(meet_url: str, profile_dir: str = None) -> bool:
+    """Відкриває посилання Google Meet безпосередньо в навчальному профілі Chrome."""
+    if not meet_url:
+        return False
+    chrome_exe = find_chrome_exe()
+    prof = profile_dir or find_school_chrome_profile()
+    try:
+        cmd = [chrome_exe, f"--profile-directory={prof}", meet_url]
+        subprocess.Popen(cmd)
+        logging.info(f"Відкрито Google Meet у профілі {prof}: {meet_url}")
+        return True
+    except Exception as e:
+        logging.error(f"Помилка відкриття Google Meet: {e}")
+        return False
+
+
 class ScheduleManager:
     """Менеджер розкладу: відстежує поточний урок та автоматично вмикає перерву за часом."""
     def __init__(self, schedule_file: str = None):
@@ -347,6 +397,7 @@ class ScheduleManager:
             "enabled": True,
             "auto_switch_subject": True,
             "auto_recess": True,
+            "auto_open_meet": True,
             "detect_from_windows": True,
             "detect_from_audio": True,
             "bells": DEFAULT_BELLS,

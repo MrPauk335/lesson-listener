@@ -2,6 +2,7 @@
   "enabled": true,
   "auto_switch_subject": true,
   "auto_recess": true,
+  "auto_open_meet": true,
   "detect_from_windows": true,
   "detect_from_audio": true,
   "bells": [

@@ -5,6 +5,7 @@ Lesson Listener — розумний AI-суфлер для онлайн-уро�
 
 Запуск:  run.bat   або   pythonw app.py   (додай --tray, щоб стартувати прихованим у треї)
 """
+import datetime
 import logging
 import re
 import sys
@@ -25,8 +26,9 @@ from core import (ANSWER_MODELS, BG_MODELS, DEFAULT_BELLS, DEFAULT_CONFIG, DEFAU
                   FALLBACK_CHAIN, GEMINI_ANSWER_MODELS, GROQ_MODELS, HOTKEY, MAX_RING_SECONDS,
                   OPENROUTER_MODELS, PROVIDERS, TARGET_SR, GeminiEngine, LessonContext, ProfileManager,
                   ScheduleManager, UniversalRecorder, aloud_to_html, audio_to_wav_bytes, clean_math,
-                  detect_subject_from_text, detect_subject_from_windows, get_active_window_title, load_config,
-                  parse_teacher_text_to_pairs, save_config)
+                  detect_subject_from_text, detect_subject_from_windows, find_chrome_exe,
+                  find_school_chrome_profile, get_active_window_title, load_config,
+                  open_meet_in_school_profile, parse_teacher_text_to_pairs, save_config)
 
 M = 14        # поле навколо картки під тінь
 RADIUS = 16
@@ -141,6 +143,8 @@ class FloatingWidget(QWidget):
         hl.addStretch(1)
         self.btn_new = self._icon_btn("refresh", "Новий урок — очистити буфер звуку й тему",
                                       lambda *_: c.on_start_new_lesson())
+        self.btn_meet = self._icon_btn("globe", "Відкрити Google Meet цього уроку (у навчальному профілі Chrome)",
+                                       lambda *_: c.open_current_meet(force=True))
         self.btn_recess = self._icon_btn("coffee", "Перерва / Пауза — вимкнути прослуховування на зміні",
                                          lambda *_: c.toggle_recess(), checkable=True)
         self.btn_recess.setObjectName("IconRecess")
@@ -150,7 +154,7 @@ class FloatingWidget(QWidget):
         self.btn_pin.setChecked(bool(c.cfg.get("topmost", True)))
         self.btn_gear = self._icon_btn("gear", "Пам'ять уроку та налаштування", lambda *_: c.open_panel())
         self.btn_hide = self._icon_btn("minimize", "Сховати в трей (Esc)", lambda *_: self.hide_widget())
-        for b in (self.btn_new, self.btn_recess, self.btn_mini, self.btn_pin, self.btn_gear, self.btn_hide):
+        for b in (self.btn_new, self.btn_meet, self.btn_recess, self.btn_mini, self.btn_pin, self.btn_gear, self.btn_hide):
             hl.addWidget(b)
         root.addWidget(self.header)
 
@@ -576,6 +580,20 @@ class SettingsPanel(QDialog):
         btn_imp.clicked.connect(self._open_import_teachers_dialog)
         row.addWidget(btn_imp)
         cv.addLayout(row)
+
+        row_m = QHBoxLayout()
+        self.ent_meet = QLineEdit()
+        self.ent_meet.setPlaceholderText("Google Meet уроку (https://meet.google.com/...)")
+        row_m.addWidget(self.ent_meet, 1)
+        btn_m_save = QPushButton("Зберегти Meet")
+        btn_m_save.setObjectName("Soft")
+        btn_m_save.clicked.connect(lambda *_: self.ctrl.save_meet_url(self.ent_meet.text()))
+        row_m.addWidget(btn_m_save)
+        btn_m_open = QPushButton("🚀 Відкрити")
+        btn_m_open.setObjectName("Accent")
+        btn_m_open.clicked.connect(lambda *_: self.ctrl.open_current_meet(force=True))
+        row_m.addWidget(btn_m_open)
+        cv.addLayout(row_m)
         self.txt_rules = QPlainTextEdit()
         self.txt_rules.setPlaceholderText("Правила та стиль відповідей — кожне з нового рядка")
         self.txt_rules.setFixedHeight(88)
@@ -714,6 +732,7 @@ class SettingsPanel(QDialog):
         _sched_tg("Увімкнути розумний розклад дзвінків та уроків", "enabled")
         _sched_tg("Авто-вмикання перерви (☕ пауза запису на зміні)", "auto_recess")
         _sched_tg("Авто-перемикання предмета за розкладом дзвінків", "auto_switch_subject")
+        _sched_tg("Авто-відкриття Google Meet уроку (у навчальному профілі Chrome)", "auto_open_meet")
         _sched_tg("Зчитувати предмет із заголовка Meet / Zoom / браузера", "detect_from_windows")
         _sched_tg("ШІ-розпізнавання перерви та предмета з голосу вчителя", "detect_from_audio")
         v.addWidget(card_tg)
@@ -1016,6 +1035,8 @@ class SettingsPanel(QDialog):
     def load_profile_fields(self):
         prof = self.ctrl.active_profile
         self.ent_teacher.setText(prof.get("teacher_name", ""))
+        if hasattr(self, "ent_meet"):
+            self.ent_meet.setText(prof.get("meet_url", ""))
         self.txt_rules.setPlainText("\n".join(prof.get("permanent_rules", [])) or prof.get("teacher_style", ""))
         self.refresh_archive()
 
@@ -1124,6 +1145,7 @@ class LessonListenerApp(QObject):
 
         self.schedule_mgr = ScheduleManager()
         self._auto_recess_active = False
+        self._opened_meets_today = set()
 
         self._sched_timer = QTimer(self)
         self._sched_timer.setInterval(5000)
@@ -1305,6 +1327,10 @@ class LessonListenerApp(QObject):
             else:
                 self.widget.lbl_banner.setText(f"{sub_name} · Тема: {topic}")
 
+        # 5. Авто-відкриття Google Meet у навчальному профілі Chrome
+        if self.schedule_mgr.data.get("auto_open_meet", True) and not self.is_recess and st.get("is_school_time"):
+            self.open_current_meet(force=False)
+
     def _set_busy(self, busy):
         self.busy = busy
         self.widget.set_busy(busy)
@@ -1353,6 +1379,8 @@ class LessonListenerApp(QObject):
         self.act_toggle.triggered.connect(lambda *_: self.widget.toggle_visibility())
         act_answer = menu.addAction(f"Відповісти зараз  ({HOTKEY.upper()})")
         act_answer.triggered.connect(lambda *_: self.on_trigger_answer())
+        act_meet = menu.addAction("🌐 Відкрити Google Meet уроку")
+        act_meet.triggered.connect(lambda *_: self.open_current_meet(force=True))
 
         self.act_recess = menu.addAction("☕ Перерва (пауза на зміні)")
         self.act_recess.setCheckable(True)
@@ -1718,6 +1746,40 @@ class LessonListenerApp(QObject):
         self.prof_mgr.save(self.active_profile)
         self.widget.refresh_banner()
         self.set_status(f"Викладача збережено: {self.active_profile['teacher_name']} ✔")
+
+    def save_meet_url(self, url: str):
+        self.active_profile["meet_url"] = (url or "").strip()
+        self.prof_mgr.save(self.active_profile)
+        self.set_status("Google Meet збережено в профіль ✔")
+
+    def open_current_meet(self, force=False):
+        """Відкриває Google Meet поточного уроку в навчальному профілі Chrome."""
+        st = self.schedule_mgr.get_status(prof_mgr=self.prof_mgr) if hasattr(self, "schedule_mgr") else {}
+        sub_id = st.get("subject_id") or self.active_profile.get("id")
+        prof = self.prof_mgr.get(sub_id) if hasattr(self, "prof_mgr") else self.active_profile
+        meet_url = prof.get("meet_url", "")
+        if not meet_url:
+            if force:
+                self.set_status("⚠️ Для цього предмета ще не вказано посилання на Meet", warn=True)
+            return False
+
+        today_key = (datetime.date.today().isoformat(), st.get("lesson_num", 0), sub_id)
+        if not force and today_key in self._opened_meets_today:
+            return False
+
+        self._opened_meets_today.add(today_key)
+        res = open_meet_in_school_profile(meet_url, self.cfg.get("chrome_profile"))
+        if res:
+            sub_name = prof.get("name", sub_id)
+            self.set_status(f"🚀 Відкрито Google Meet: {sub_name}")
+            if self.tray is not None and not self.widget.isVisible():
+                self.tray.showMessage(
+                    "Lesson Listener",
+                    f"Урок розпочався! Відкрито Google Meet: {sub_name}",
+                    QSystemTrayIcon.MessageIcon.Information,
+                    3500
+                )
+        return res
 
     def save_rules(self, raw: str):
         lines = [line.strip() for line in (raw or "").split("\n") if line.strip()]
