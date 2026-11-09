@@ -1249,25 +1249,35 @@ class LessonListenerApp(QObject):
                 self.set_status(f"▶️ Урок розпочався: {st['status_text']}")
 
         # 2. Авто-перемикання предмета за розкладом уроків
+        sched_sub = st.get("subject_id") if st.get("is_school_time") and not st.get("is_recess") else ""
         if self.schedule_mgr.data.get("auto_switch_subject", True) and not self.is_recess:
-            sched_sub = st.get("subject_id")
             if sched_sub and sched_sub != self.active_profile.get("id"):
                 if sched_sub in self.prof_mgr.profiles:
                     logging.info(f"Авто-перемикання предмета за розкладом: {sched_sub}")
                     self.switch_subject(sched_sub)
                     self.set_status(f"📅 Розклад: {self.active_profile.get('name')}")
 
-        # 3. Детекція предмета із заголовка активного вікна браузера / Zoom / Meet
+        # 3. Детекція предмета із вікон (тільки якщо в розкладі вікно або активний дзвінок Meet/Zoom)
         if self.schedule_mgr.data.get("detect_from_windows", True) and not self.is_recess:
             try:
-                win_sub = detect_subject_from_windows()
-                if not win_sub:
-                    title = get_active_window_title()
-                    win_sub = detect_subject_from_text(title)
-                if win_sub and win_sub != self.active_profile.get("id") and win_sub in self.prof_mgr.profiles:
-                    logging.info(f"Розпізнано предмет із вікон: {win_sub}")
-                    self.switch_subject(win_sub)
-                    self.set_status(f"🌐 Вікно уроку: {self.active_profile.get('name')}")
+                if not sched_sub:
+                    # Якщо за розкладом зараз немає уроку — шукаємо по відкритих вікнах
+                    win_sub = detect_subject_from_windows()
+                    if win_sub and win_sub != self.active_profile.get("id") and win_sub in self.prof_mgr.profiles:
+                        logging.info(f"Розпізнано предмет із вікон: {win_sub}")
+                        self.switch_subject(win_sub)
+                        self.set_status(f"🌐 Вікно уроку: {self.active_profile.get('name')}")
+                else:
+                    # Якщо урок є в розкладі, фонові вкладки (наприклад від минулих уроків)
+                    # НЕ повинні перебивати розклад! Перевіряємо тільки якщо активне вікно — це дзвінок
+                    fg_title = get_active_window_title()
+                    tl = fg_title.lower() if fg_title else ""
+                    if any(call_app in tl for call_app in ["meet", "zoom", "teams", "дистанц"]):
+                        fg_sub = detect_subject_from_text(fg_title)
+                        if fg_sub and fg_sub != self.active_profile.get("id") and fg_sub in self.prof_mgr.profiles:
+                            logging.info(f"Активний дзвінок заміни: {fg_sub}")
+                            self.switch_subject(fg_sub)
+                            self.set_status(f"🌐 Дзвінок уроку: {self.active_profile.get('name')}")
             except Exception:
                 pass
 
