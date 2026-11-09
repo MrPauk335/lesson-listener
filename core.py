@@ -324,6 +324,16 @@ def get_all_matching_window_titles() -> list:
     return titles
 
 
+def open_windows_sound_routing() -> bool:
+    """Відкриває системні налаштування гучності та пристроїв Windows (App volume)."""
+    try:
+        os.system("start ms-settings:apps-volume")
+        return True
+    except Exception as e:
+        logging.error(f"Помилка відкриття налаштувань звуку Windows: {e}")
+        return False
+
+
 def detect_subject_from_windows() -> str:
     for title in get_all_matching_window_titles():
         sub = detect_subject_from_text(title)
@@ -1372,34 +1382,40 @@ class UniversalRecorder:
     def list_sources(self):
         sources = []
 
-        # 1. Браузери
+        # 1. Браузери (знаходимо кореневий процес для захоплення звуку дерева вкладок)
+        browser_sources = []
         if HAS_PROCTAP:
             found_browsers = {}
-            for p in psutil.process_iter(["pid", "name"]):
+            for p in psutil.process_iter(["pid", "name", "cmdline"]):
                 try:
                     name_lower = p.info["name"].lower()
                     if name_lower in BROWSER_EXES:
-                        if name_lower not in found_browsers:
+                        cmd = p.info.get("cmdline") or []
+                        is_root = not any(arg.startswith("--type=") for arg in cmd)
+                        if is_root or name_lower not in found_browsers:
                             found_browsers[name_lower] = p.info["pid"]
                 except Exception:
                     pass
 
             for exe_name, pid in found_browsers.items():
                 title = BROWSER_EXES[exe_name]
-                sources.append((f"🌐 {title} (лише вкладки уроку)", {"category": "browser", "pid": pid, "name": title}))
+                browser_sources.append((f"🌐 {title} (вкладка уроку)", {"category": "browser", "pid": pid, "name": title}))
 
         # 2. Мікрофони
+        mic_sources = []
         try:
             wasapi = self.pa.get_host_api_info_by_type(pyaudio.paWASAPI)
             for i in range(wasapi["deviceCount"]):
                 d = self.pa.get_device_info_by_host_api_device_index(wasapi["index"], i)
                 if d["maxInputChannels"] > 0 and not d.get("isLoopbackDevice", False):
                     name = d["name"]
-                    sources.append((f"🎤 Мікрофон: {name}", {"category": "mic", "dev": d}))
+                    mic_sources.append((f"🎤 Мікрофон: {name}", {"category": "mic", "dev": d}))
         except Exception:
             pass
 
-        # 3. Системний звук (Динаміки)
+        # 3. Віртуальні кабелі (ізоляція від Discord) та загальний звук системи
+        cable_sources = []
+        sys_sources = []
         default_idx = None
         try:
             default_idx = self.pa.get_default_wasapi_loopback()["index"]
@@ -1408,15 +1424,20 @@ class UniversalRecorder:
 
         try:
             for d in self.pa.get_loopback_device_info_generator():
-                item = (f"🔊 Системний звук: {d['name']}", {"category": "system", "dev": d})
-                if d["index"] == default_idx:
-                    sources.insert(0, item)
+                name = d["name"]
+                nl = name.lower()
+                if any(k in nl for k in ["cable", "virtual", "voicemeeter", "line 1"]):
+                    cable_sources.append((f"🎛️ {name} (Ізольований кабель без Discord)", {"category": "cable", "dev": d}))
                 else:
-                    sources.append(item)
+                    item = (f"🔊 Системний звук: {name}", {"category": "system", "dev": d})
+                    if d["index"] == default_idx:
+                        sys_sources.insert(0, item)
+                    else:
+                        sys_sources.append(item)
         except Exception:
             pass
 
-        return sources
+        return browser_sources + cable_sources + mic_sources + sys_sources
 
     def start(self, source_info: dict):
         self.stop()

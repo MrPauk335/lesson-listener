@@ -28,7 +28,8 @@ from core import (ANSWER_MODELS, BG_MODELS, DEFAULT_BELLS, DEFAULT_CONFIG, DEFAU
                   ScheduleManager, UniversalRecorder, aloud_to_html, audio_to_wav_bytes, clean_math,
                   detect_subject_from_text, detect_subject_from_windows, find_chrome_exe,
                   find_school_chrome_profile, get_active_window_title, load_config,
-                  open_meet_in_school_profile, parse_teacher_text_to_pairs, save_config)
+                  open_meet_in_school_profile, open_windows_sound_routing, parse_teacher_text_to_pairs,
+                  save_config)
 
 M = 14        # поле навколо картки під тінь
 RADIUS = 16
@@ -53,7 +54,12 @@ def normalize_status_text(text: str) -> str:
     t = re.sub(r'^(?:⚠️\s*)+', '⚠️ ', t)
     t = re.sub(r'^(?:⚡\s*)+', '⚡ ', t)
     return t.strip()
-CATS = [("mic", "mic", "Мікрофон"), ("browser", "globe", "Браузер"), ("system", "speaker", "Динаміки")]
+CATS = [
+    ("browser", "globe", "Браузер"),
+    ("cable", "bolt", "Кабель"),
+    ("mic", "mic", "Мікрофон"),
+    ("system", "speaker", "Динаміки"),
+]
 CAT_LABEL = {c: label for c, _, label in CATS}
 DEFAULT_PLACEHOLDER = f"Натисни {HOTKEY.upper()}, коли вчитель закінчить питання — відповідь з'явиться тут"
 
@@ -1000,6 +1006,13 @@ class SettingsPanel(QDialog):
         b_scan.clicked.connect(lambda *_: c.refresh_sources())
         c4.addWidget(b_scan)
         v.addWidget(card4)
+
+        btn_route = QPushButton("🎛️ Розділити звук у Windows (Chrome ➔ Кабель, Discord ➔ Динаміки)")
+        btn_route.setObjectName("Soft")
+        btn_route.setToolTip("Відкриває системні налаштування виводу додатків Windows для 100% ізоляції від Discord")
+        btn_route.clicked.connect(lambda *_: open_windows_sound_routing())
+        v.addWidget(btn_route)
+
         v.addStretch(1)
         return page
 
