@@ -22,3 +22,14 @@ env/
 .vscode/
 Thumbs.db
 Desktop.ini
+
+# Release builds and local SDK/signing state
+dist/
+build/
+release/
+.gradle/
+android/.gradle/
+android/local.properties
+android/**/build/
+*.keystore
+*.jks
