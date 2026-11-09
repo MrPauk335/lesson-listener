@@ -13,9 +13,9 @@ import threading
 import time
 
 import numpy as np
-from PySide6.QtCore import (QBuffer, QByteArray, QIODevice, QObject, QPoint, QRect, QRectF,
-                            QSize, Qt, QTimer, Signal)
-from PySide6.QtGui import (QActionGroup, QColor, QCursor, QGuiApplication, QKeySequence, QPainter,
+from PySide6.QtCore import (QBuffer, QByteArray, QEasingCurve, QIODevice, QObject, QPoint, QPropertyAnimation,
+                            QRect, QRectF, QSize, Qt, QTimer, Signal)
+from PySide6.QtGui import (QActionGroup, QColor, QCursor, QFont, QGuiApplication, QKeySequence, QPainter,
                            QPalette, QPen, QPixmap, QShortcut)
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayout,
                                QInputDialog, QLabel, QLineEdit, QMenu, QMessageBox, QPlainTextEdit, QProgressBar,
@@ -74,6 +74,7 @@ class Bridge(QObject):
     hotkey = Signal()
     snip_hotkey = Signal()
     slide_detected = Signal(str)
+    invoke = Signal(object)  # виконати callable в UI-потоці (QTimer.singleShot з робочого потоку не спрацьовує)
 
 
 class ScreenSnipper(QWidget):
@@ -233,6 +234,11 @@ class FloatingWidget(QWidget):
         self._geom_timer.setSingleShot(True)
         self._geom_timer.setInterval(600)
         self._geom_timer.timeout.connect(self._persist_geometry)
+        self._bg_key = None
+        self._bg_cache = None
+        self._fade = QPropertyAnimation(self, b"windowOpacity", self)
+        self._fade.setDuration(140)
+        self._fade.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._build()
         self.set_mini(self._mini, initial=True)
         self.restore_geometry()
@@ -303,13 +309,6 @@ class FloatingWidget(QWidget):
         # ---- банер виявлення слайда / дошки на екрані
         self.slide_bar = QFrame()
         self.slide_bar.setObjectName("SlideBar")
-        self.slide_bar.setStyleSheet("""
-            QFrame#SlideBar {
-                background: rgba(14, 165, 233, 0.14);
-                border: 1px solid rgba(56, 189, 248, 0.65);
-                border-radius: 9px;
-            }
-        """)
         sbl = QHBoxLayout(self.slide_bar)
         sbl.setContentsMargins(10, 6, 8, 6)
         sbl.setSpacing(8)
@@ -317,47 +316,28 @@ class FloatingWidget(QWidget):
         self.lbl_slide_icon = QLabel()
         self.lbl_slide_icon.setFixedSize(18, 18)
         self.lbl_slide_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_slide_icon.setPixmap(T.glyph_icon("camera", "#38bdf8", size=14).pixmap(14, 14))
+        self.lbl_slide_icon.setPixmap(T.glyph_icon("camera", T.INFO, size=14).pixmap(14, 14))
         sbl.addWidget(self.lbl_slide_icon)
 
         self.lbl_slide_text = QLabel("Вчитель демонструє слайд / дошку")
-        self.lbl_slide_text.setStyleSheet("color: #f1f5f9; font-size: 11px; font-weight: 500;")
+        self.lbl_slide_text.setObjectName("SlideText")
         self.lbl_slide_text.setWordWrap(True)
         sbl.addWidget(self.lbl_slide_text, 1)
 
         self.btn_slide_capture = QPushButton(" У конспект")
+        self.btn_slide_capture.setObjectName("SlideCapture")
         self.btn_slide_capture.setIcon(T.glyph_icon("camera", "#ffffff", size=12))
         self.btn_slide_capture.setIconSize(QSize(12, 12))
-        self.btn_slide_capture.setStyleSheet("""
-            QPushButton {
-                background: #0284c7;
-                color: #ffffff;
-                border: none;
-                border-radius: 6px;
-                padding: 4px 9px;
-                font-weight: 600;
-                font-size: 11px;
-            }
-            QPushButton:hover { background: #0369a1; }
-        """)
         self.btn_slide_capture.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_slide_capture.clicked.connect(lambda: c.accept_slide_capture())
         sbl.addWidget(self.btn_slide_capture)
 
         self.btn_slide_dismiss = QPushButton()
+        self.btn_slide_dismiss.setObjectName("SlideDismiss")
         self.btn_slide_dismiss.setIcon(T.glyph_icon("close", "#94a3b8", size=10))
         self.btn_slide_dismiss.setIconSize(QSize(10, 10))
         self.btn_slide_dismiss.setFixedSize(22, 22)
         self.btn_slide_dismiss.setToolTip("Приховати (не питати для цього слайда)")
-        self.btn_slide_dismiss.setStyleSheet("""
-            QPushButton {
-                background: transparent;
-                border: none;
-                border-radius: 5px;
-                padding: 0;
-            }
-            QPushButton:hover { background: rgba(248, 113, 113, 0.18); }
-        """)
         self.btn_slide_dismiss.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_slide_dismiss.clicked.connect(lambda: c.dismiss_slide_prompt())
         sbl.addWidget(self.btn_slide_dismiss)
@@ -489,18 +469,18 @@ class FloatingWidget(QWidget):
         root.addLayout(bottom)
 
     # ------------------------------------------------------------ малювання картки з м'якою тінню
-    def paintEvent(self, _):
+    def paintEvent(self, e):
+        # Вікно напівпрозоре, тож кожне оновлення дочірнього віджета (індикатор звуку кожні 80 мс)
+        # перемальовує фон під ним — тому тінь рендериться один раз у піксмап, а тут лише копіюється.
+        dpr = self.devicePixelRatioF()
+        key = (self.width(), self.height(), dpr)
+        if self._bg_key != key:
+            self._bg_key = key
+            self._bg_cache = T.render_card(self.width(), self.height(), M, RADIUS, dpr)
         p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        card = QRectF(self.rect()).adjusted(M, M, -M, -M)
-        p.setPen(Qt.PenStyle.NoPen)
-        for i in range(M, 0, -1):
-            a = int(20 * (1 - i / M) ** 1.5) + 1
-            p.setBrush(QColor(0, 0, 0, a))
-            p.drawRoundedRect(card.adjusted(-i, -i + 2, i, i), RADIUS + i, RADIUS + i)
-        p.setBrush(QColor(T.BG))
-        p.setPen(QPen(QColor(T.BORDER), 1))
-        p.drawRoundedRect(card.adjusted(0.5, 0.5, -0.5, -0.5), RADIUS, RADIUS)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+        # Painter уже обрізаний областю оновлення; ручний source rect давав зсув на дробовому DPR (150%).
+        p.drawPixmap(0, 0, self._bg_cache)
 
     # ------------------------------------------------------------ геометрія / видимість
     def restore_geometry(self):
@@ -541,7 +521,16 @@ class FloatingWidget(QWidget):
         T.set_topmost(self, bool(self.ctrl.cfg.get("topmost", True)))
 
     def show_widget(self):
-        self.show()
+        target = max(0.5, min(1.0, self.ctrl.cfg.get("widget_opacity", 100) / 100.0))
+        if not self.isVisible():
+            self._fade.stop()
+            self.setWindowOpacity(0.0)
+            self._fade.setStartValue(0.0)
+            self._fade.setEndValue(target)
+            self.show()
+            self._fade.start()
+        else:
+            self.show()
         self.raise_()
         self.activateWindow()
 
@@ -615,7 +604,7 @@ class FloatingWidget(QWidget):
     # ------------------------------------------------------------ оновлення вигляду (викликає контролер)
     def set_state(self, state):
         text, col, _ = STATE_INFO[state]
-        self.dot.setStyleSheet(f"background:{col}; border-radius:5px;")
+        T.set_style(self.dot, f"background:{col}; border-radius:5px;")
         self.dot.setToolTip(text)
 
     def set_busy(self, busy: bool):
@@ -624,7 +613,7 @@ class FloatingWidget(QWidget):
 
     def set_status(self, text: str, warn: bool = False):
         clean = normalize_status_text(text)
-        self.lbl_status.setStyleSheet(f"color:{T.WARN if warn else T.MUTED};")
+        T.set_style(self.lbl_status, f"color:{T.WARN if warn else T.MUTED};")
         self.lbl_status.setFullText(clean)
 
     def show_slide_prompt(self, desc: str):
@@ -650,10 +639,10 @@ class FloatingWidget(QWidget):
     def refresh_banner(self):
         c = self.ctrl
         if getattr(c, "is_recess", False):
-            self.lbl_banner.setStyleSheet(f"color:{T.WARN}; font-weight:600;")
+            T.set_style(self.lbl_banner, f"color:{T.WARN}; font-weight:600;")
             self.lbl_banner.setFullText("☕ ПЕРЕРВА · Прослуховування на паузі (квота не витрачається)")
             return
-        self.lbl_banner.setStyleSheet(f"color:{T.MUTED}; font-weight:normal;")
+        T.set_style(self.lbl_banner, f"color:{T.MUTED}; font-weight:normal;")
         sub = c.active_profile.get("name", "Урок")
         teacher = c.active_profile.get("teacher_name", "")
         t_str = f" · {teacher}" if teacher else ""
@@ -688,6 +677,7 @@ class FloatingWidget(QWidget):
 
     def set_answer(self, question, who, aloud, details, dt):
         self._has_active_answer = True
+        self._recess_html = None
         self.lbl_question.setText(f"{question}  ·  {who}" if who else (question or "—"))
         self._raw_aloud = clean_math(aloud)
         self.txt_aloud.setHtml(aloud_to_html(aloud))
@@ -696,6 +686,7 @@ class FloatingWidget(QWidget):
 
     def clear_answer(self, message="—"):
         self._has_active_answer = False
+        self._recess_html = None
         self.lbl_question.setText(message)
         self._raw_aloud = ""
         self.txt_aloud.clear()
@@ -713,7 +704,7 @@ class SettingsPanel(QDialog):
         self.setWindowTitle("Lesson Listener — пам'ять і налаштування")
         self.setWindowIcon(T.app_icon())
         self.setMinimumSize(520, 540)
-        self.resize(580, 720)
+        self.resize(640, 720)
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, bool(ctrl.cfg.get("topmost", True)))
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -1197,7 +1188,9 @@ class SettingsPanel(QDialog):
         mrow.addWidget(self.cmb_model)
         cv.addLayout(mrow)
         prow_proxy = QHBoxLayout()
-        prow_proxy.addWidget(QLabel("Проксі для РФ / обходу блокувань (HTTP/SOCKS)"), 1)
+        lbl_proxy = QLabel("Проксі для РФ / обходу блокувань (HTTP/SOCKS)")
+        lbl_proxy.setWordWrap(True)
+        prow_proxy.addWidget(lbl_proxy, 1)
         self.ent_proxy = QLineEdit(cfg.get("proxy", ""))
         self.ent_proxy.setPlaceholderText("напр. http://127.0.0.1:10809 (v2ray, clash, vpn)")
         self.ent_proxy.setMinimumWidth(230)
@@ -1445,6 +1438,7 @@ class LessonListenerApp(QObject):
         self.bridge.hotkey.connect(self.on_trigger_answer)
         self.bridge.snip_hotkey.connect(self.start_screen_snip)
         self.bridge.slide_detected.connect(self.on_slide_detected)
+        self.bridge.invoke.connect(lambda fn: fn())
         self._snipper = None
 
         self.lecture_mgr = LectureManager()
@@ -1467,12 +1461,8 @@ class LessonListenerApp(QObject):
         self._auto_recess_active = False
         self._opened_meets_today = set()
         self._spoken_lessons_today = set()
-        try:
-            ensure_start_menu_shortcut()
-            if self.cfg.get("autostart", True):
-                set_windows_autostart(True)
-        except Exception:
-            pass
+        # Ярлики створюються через COM/PowerShell (до кількох секунд) — не блокуємо старт вікна
+        threading.Thread(target=self._ensure_shortcuts, daemon=True).start()
 
         self._sched_timer = QTimer(self)
         self._sched_timer.setInterval(5000)
@@ -1498,6 +1488,36 @@ class LessonListenerApp(QObject):
     # ------------------------------------------------------------ допоміжне
     def save_soon(self):
         self._save_timer.start()
+
+    def _ensure_shortcuts(self):
+        com = None
+        try:
+            import pythoncom
+            pythoncom.CoInitialize()
+            com = pythoncom
+        except Exception:
+            pass
+        try:
+            ensure_start_menu_shortcut()
+            if self.cfg.get("autostart", True):
+                set_windows_autostart(True)
+        except Exception:
+            pass
+        finally:
+            if com is not None:
+                com.CoUninitialize()
+
+    def _run_async(self, work, done=None):
+        """Виконує повільну системну перевірку у фоні, а результат передає в done(...) в UI-потоці."""
+        def _worker():
+            try:
+                res = work()
+            except Exception as e:
+                logging.debug(f"Фонова перевірка: {e}")
+                res = None
+            if done is not None:
+                self.bridge.invoke.emit(lambda: done(res))
+        threading.Thread(target=_worker, daemon=True).start()
 
     def set_status(self, text, warn=False):
         self.widget.set_status(text, warn)
@@ -1640,12 +1660,16 @@ class LessonListenerApp(QObject):
                 self.widget.lbl_banner.setText(time_txt or "☕ ПЕРЕРВА")
                 if not getattr(self.widget, "_has_active_answer", False):
                     self.widget.lbl_question.setText(f"☕ Зараз перерва (ще {st.get('rem_min', 0)} хв)")
-                    self.widget.txt_aloud.setHtml(
+                    recess_html = (
                         f"<div style='font-size:14px; color:#cbd5e1; line-height:1.55; font-family:system-ui, sans-serif;'>"
                         f"Зараз триває перерва.<br>"
                         f"👉 <b style='color:#38bdf8;'>Наступний урок:</b> <span style='color:#ffffff; font-weight:600;'>{next_txt}</span>"
                         f"</div>"
                     )
+                    # setHtml перебудовує весь документ — лише коли текст справді змінився (тік кожні 5 с)
+                    if recess_html != getattr(self.widget, "_recess_html", None):
+                        self.widget._recess_html = recess_html
+                        self.widget.txt_aloud.setHtml(recess_html)
             elif time_txt:
                 if next_txt:
                     self.widget.lbl_banner.setText(f"{sub_name} (до {st.get('end', '')}) · 👉 {next_txt}")
@@ -1670,34 +1694,39 @@ class LessonListenerApp(QObject):
                 sub_name = prof.get("name", sub_id) if prof else self.active_profile.get("name", sub_id)
                 meet_url = prof.get("meet_url", "") if prof else ""
 
-                # Якщо учень вже зайшов на урок (Meet або Zoom вже відкриті) — не озвучувати
-                if is_lesson_already_open(meet_url, sub_id, sub_name):
-                    logging.info(f"Учень вже зайшов на урок {sub_name} ({meet_url}). Оголошення початку уроку пропущено.")
-                else:
-                    # Перевіряємо, чи урок розпочався щойно (протягом останніх 3 хвилин)
-                    start_str = st.get("start", "")
-                    should_speak = True
-                    if start_str and ":" in start_str:
-                        try:
-                            now = datetime.datetime.now()
-                            sh, sm = map(int, start_str.split(":"))
-                            diff_min = (now.hour * 60 + now.minute) - (sh * 60 + sm)
-                            # Якщо урок розпочався понад 3 хвилини тому — учень вже займається, не перебиваємо
-                            if diff_min > 3:
-                                should_speak = False
-                                logging.info(f"Урок {sub_name} розпочався {diff_min} хв тому. Оголошення початку уроку пропущено.")
-                        except Exception:
-                            pass
+                # Перевіряємо, чи урок розпочався щойно (протягом останніх 3 хвилин)
+                start_str = st.get("start", "")
+                should_speak = True
+                if start_str and ":" in start_str:
+                    try:
+                        now = datetime.datetime.now()
+                        sh, sm = map(int, start_str.split(":"))
+                        diff_min = (now.hour * 60 + now.minute) - (sh * 60 + sm)
+                        # Якщо урок розпочався понад 3 хвилини тому — учень вже займається, не перебиваємо
+                        if diff_min > 3:
+                            should_speak = False
+                            logging.info(f"Урок {sub_name} розпочався {diff_min} хв тому. Оголошення початку уроку пропущено.")
+                    except Exception:
+                        pass
 
-                    if should_speak:
-                        start_time = st.get("start") or datetime.datetime.now().strftime("%H:%M")
-                        lang = self.cfg.get("language", "auto")
-                        if lang == "uk":
-                            speech = f"Початок уроку: {sub_name}. Час {start_time}."
-                        else:
-                            speech = f"Начало урока: {sub_name}. Время {start_time}."
+                if should_speak:
+                    start_time = st.get("start") or datetime.datetime.now().strftime("%H:%M")
+                    lang = self.cfg.get("language", "auto")
+                    if lang == "uk":
+                        speech = f"Початок уроку: {sub_name}. Час {start_time}."
+                    else:
+                        speech = f"Начало урока: {sub_name}. Время {start_time}."
+
+                    # Якщо учень вже зайшов на урок (Meet або Zoom вже відкриті) — не озвучувати.
+                    # Перевірка повільна (tasklist), тому у фоні.
+                    def _done(already_open, speech=speech, lang=lang, sub_name=sub_name, meet_url=meet_url):
+                        if already_open:
+                            logging.info(f"Учень вже зайшов на урок {sub_name} ({meet_url}). Оголошення початку уроку пропущено.")
+                            return
                         logging.info(f"Оголошення початку уроку: {speech}")
                         speak_text(speech, lang=lang)
+
+                    self._run_async(lambda: is_lesson_already_open(meet_url, sub_id, sub_name), _done)
 
     def _set_busy(self, busy):
         self.busy = busy
@@ -1972,14 +2001,14 @@ class LessonListenerApp(QObject):
                     if analysis.get("is_recess") is True and not self.is_recess:
                         logging.info("ШІ розпізнав оголошення перерви вчителем!")
                         self._auto_recess_active = True
-                        QTimer.singleShot(0, lambda: self.toggle_recess(True))
-                        QTimer.singleShot(0, lambda: self.set_status("☕ ШІ: вчитель оголосив перерву · Звук на паузі"))
+                        self.bridge.invoke.emit(lambda: self.toggle_recess(True))
+                        self.bridge.invoke.emit(lambda: self.set_status("☕ ШІ: вчитель оголосив перерву · Звук на паузі"))
 
                     det_sub = analysis.get("detected_subject")
                     if det_sub and det_sub in self.prof_mgr.profiles and det_sub != self.active_profile.get("id"):
                         logging.info(f"ШІ розпізнав зміну предмета у звуці: {det_sub}")
-                        QTimer.singleShot(0, lambda s=det_sub: self.switch_subject(s))
-                        QTimer.singleShot(0, lambda: self.set_status(f"🎯 ШІ: виявлено урок {self.active_profile.get('name')}"))
+                        self.bridge.invoke.emit(lambda s=det_sub: self.switch_subject(s))
+                        self.bridge.invoke.emit(lambda: self.set_status(f"🎯 ШІ: виявлено урок {self.active_profile.get('name')}"))
 
     # ------------------------------------------------------------ відповіді
     def on_quick_text_answer(self, q: str) -> bool:
@@ -2308,17 +2337,24 @@ class LessonListenerApp(QObject):
             return False
 
         sub_name = prof.get("name", sub_id) if prof else sub_id
-
-        # Перевірка: якщо учень вже зайшов на урок (вкладка Meet або Zoom відкрита) — не відкривати повторно
-        if not force and is_lesson_already_open(meet_url, sub_id, sub_name):
-            self._opened_meets_today.add(today_key)
-            logging.info(f"Урок {sub_name} ({meet_url}) вже відкрито в браузері/Zoom. Повторне відкриття пропущено.")
-            return False
-
         self._opened_meets_today.add(today_key)
+
+        if force:
+            return self._launch_lesson_link(meet_url, sub_name)
+
+        # Перевірка через tasklist займає до кількох секунд — робимо її у фоні, щоб віджет не зависав
+        def _done(already_open):
+            if already_open:
+                logging.info(f"Урок {sub_name} ({meet_url}) вже відкрито в браузері/Zoom. Повторне відкриття пропущено.")
+            else:
+                self._launch_lesson_link(meet_url, sub_name)
+
+        self._run_async(lambda: is_lesson_already_open(meet_url, sub_id, sub_name), _done)
+        return True
+
+    def _launch_lesson_link(self, meet_url, sub_name):
         res = open_lesson_link(meet_url, self.cfg.get("chrome_profile"))
         if res:
-            sub_name = prof.get("name", sub_id)
             self.set_status(f"🚀 Відкрито урок ({sub_name})")
             if self.tray is not None and not self.widget.isVisible():
                 self.tray.showMessage(

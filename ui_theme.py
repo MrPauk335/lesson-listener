@@ -1,4 +1,5 @@
 """Тема, іконки та базові віджети для Lesson Listener (PySide6)."""
+import functools
 import os
 import tempfile
 
@@ -6,22 +7,60 @@ from PySide6.QtCore import (Property, QAbstractAnimation, QEasingCurve, QPointF,
 from PySide6.QtGui import QColor, QFont, QIcon, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QAbstractButton, QLabel, QSizePolicy
 
+try:
+    import qtawesome as qta
+except Exception:  # без QtAwesome працюємо на гліфах Segoe MDL2
+    qta = None
+
 # ---------------------------------------------------------------- палітра
-BG = "#15171d"
-BG_CARD = "#1b1e27"
-BG_HOVER = "#262a36"
-BORDER = "#2b2f3b"
-BORDER_SOFT = "#262a35"
-TEXT = "#e9ebf2"
-MUTED = "#8d93a6"
-MUTED_LIGHT = "#aab1c6"
+BG = "#13151b"
+BG_CARD = "#1a1d26"
+BG_HOVER = "#252a37"
+BORDER = "#2a2f3d"
+BORDER_SOFT = "#232733"
+TEXT = "#eceef5"
+MUTED = "#8b91a5"
+MUTED_LIGHT = "#aeb5c9"
 ACCENT = "#5b8cff"
+ACCENT_2 = "#8b5cf6"
 ACCENT_HOVER = "#7ba0ff"
 ACCENT_PRESSED = "#4a77e6"
 ACCENT_SOFT = "#243357"
+INFO = "#38bdf8"
 OK = "#3ddc97"
 WARN = "#ffb454"
 ERR = "#ff5d6c"
+
+# ---------------------------------------------------------------- іконки (Phosphor через QtAwesome)
+QTA_ICON = {
+    "mic": "ph.microphone",
+    "globe": "ph.globe",
+    "speaker": "ph.speaker-high",
+    "pin": "ph.push-pin",
+    "copy": "ph.copy",
+    "gear": "ph.gear-six",
+    "minimize": "ph.minus",
+    "chevron_down": "ph.caret-down",
+    "chevron_up": "ph.caret-up",
+    "refresh": "ph.arrow-clockwise",
+    "bolt": "ph.lightning",
+    "delete": "ph.trash",
+    "save": "ph.floppy-disk",
+    "forward": "ph.paper-plane-right",
+    "add": "ph.plus",
+    "coffee": "ph.coffee",
+    "education": "ph.graduation-cap",
+    "pause": "ph.pause",
+    "play": "ph.play",
+    "camera": "ph.camera",
+    "crop": "ph.crop",
+    "note": "ph.file-text",
+    "sheet": "ph.file-text",
+    "notebook": "ph.notebook",
+    "folder": "ph.folder-open",
+    "calendar": "ph.calendar-blank",
+    "close": "ph.x",
+}
 
 # ---------------------------------------------------------------- іконки (Segoe MDL2 Assets)
 ICON_FONT = "Segoe MDL2 Assets"
@@ -111,8 +150,17 @@ def _draw_vector_glyph(p: QPainter, glyph: str, s: float, col: str) -> bool:
     return False
 
 
+@functools.lru_cache(maxsize=None)
 def glyph_icon(glyph: str, color: str = MUTED_LIGHT, color_on: str = None, size: int = 16) -> QIcon:
-    """Іконка: чіткий векторний рендер або гліф Segoe MDL2 на HiDPI."""
+    """Іконка (кешується): Phosphor через QtAwesome, інакше векторний рендер або гліф Segoe MDL2."""
+    name = QTA_ICON.get(glyph) if qta is not None else None
+    if name:
+        try:
+            on = color_on or color
+            return qta.icon(name, color=color, color_active=color, color_on=on, color_on_active=on,
+                            color_disabled=MUTED)
+        except Exception:
+            pass
     icon = QIcon()
     scale = 2
     for state, col in ((QIcon.State.Off, color), (QIcon.State.On, color_on or color)):
@@ -173,6 +221,35 @@ def tray_icon(color: str = ACCENT) -> QIcon:
 
 def app_icon() -> QIcon:
     return tray_icon(ACCENT)
+
+
+def set_style(widget, css: str):
+    """setStyleSheet лише при зміні: кожен виклик змушує Qt заново парсити й полірувати стиль."""
+    if widget.styleSheet() != css:
+        widget.setStyleSheet(css)
+
+
+def render_card(width: int, height: int, margin: int, radius: int, dpr: float = 1.0) -> QPixmap:
+    """Попередньо малює картку вікна з м'якою тінню, щоб paintEvent лише копіював готовий піксмап."""
+    pm = QPixmap(max(1, int(width * dpr)), max(1, int(height * dpr)))
+    pm.setDevicePixelRatio(dpr)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    card = QRectF(0, 0, width, height).adjusted(margin, margin, -margin, -margin)
+    p.setPen(Qt.PenStyle.NoPen)
+    for i in range(margin, 0, -1):
+        a = int(22 * (1 - i / margin) ** 1.5) + 1
+        p.setBrush(QColor(0, 0, 0, a))
+        p.drawRoundedRect(card.adjusted(-i, -i + 2, i, i), radius + i, radius + i)
+    grad = QLinearGradient(0, card.top(), 0, card.bottom())
+    grad.setColorAt(0.0, QColor(BG).lighter(112))
+    grad.setColorAt(0.35, QColor(BG))
+    p.setBrush(grad)
+    p.setPen(QPen(QColor(BORDER), 1))
+    p.drawRoundedRect(card.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
+    p.end()
+    return pm
 
 
 def set_topmost(widget, on: bool):
@@ -317,10 +394,10 @@ QPushButton#IconRecess:checked {{ background: #452405; border: 1px solid #d97706
 QPushButton#Seg {{ background: {BG_CARD}; border: 1px solid {BORDER}; border-radius: 10px; padding: 7px 8px; color: {MUTED_LIGHT}; }}
 QPushButton#Seg:hover {{ background: {BG_HOVER}; }}
 QPushButton#Seg:checked {{ background: {ACCENT_SOFT}; border: 1px solid #3f5fb5; color: #ffffff; }}
-QPushButton#Primary {{ background: {ACCENT}; color: #ffffff; font-size: 14px; font-weight: 600; border-radius: 12px; padding: 11px 14px; }}
-QPushButton#Primary:hover {{ background: {ACCENT_HOVER}; }}
-QPushButton#Primary:pressed {{ background: {ACCENT_PRESSED}; }}
-QPushButton#Primary:disabled {{ background: #2a2f3d; color: {MUTED}; }}
+QPushButton#Primary {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {ACCENT}, stop:1 {ACCENT_2}); color: #ffffff; font-size: 14px; font-weight: 600; border-radius: 12px; padding: 11px 14px; }}
+QPushButton#Primary:hover {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {ACCENT_HOVER}, stop:1 #a17cf8); }}
+QPushButton#Primary:pressed {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {ACCENT_PRESSED}, stop:1 #7442e8); }}
+QPushButton#Primary:disabled {{ background: #262b39; color: {MUTED}; }}
 QPushButton#Accent {{ background: {ACCENT}; color: #ffffff; font-weight: 600; padding: 7px 14px; }}
 QPushButton#Accent:hover {{ background: {ACCENT_HOVER}; }}
 QPushButton#Soft {{ background: {BG_CARD}; border: 1px solid {BORDER}; padding: 7px 12px; }}
@@ -331,6 +408,13 @@ QPushButton#Danger:hover {{ background: #2c1f26; }}
 QPushButton#Ghost {{ color: {MUTED_LIGHT}; font-size: 12px; padding: 5px 9px; }}
 QPushButton#Link {{ color: {MUTED}; font-size: 12px; text-align: left; padding: 2px 4px; }}
 QPushButton#Link:hover {{ color: {TEXT}; background: transparent; }}
+QPushButton#Icon:pressed, QPushButton#Seg:pressed, QPushButton#Soft:pressed, QPushButton#Ghost:pressed {{ background: #2e3445; }}
+QFrame#SlideBar {{ background: rgba(56, 189, 248, 0.10); border: 1px solid rgba(56, 189, 248, 0.55); border-radius: 10px; }}
+QLabel#SlideText {{ color: #f1f5f9; font-size: 11px; font-weight: 500; }}
+QPushButton#SlideCapture {{ background: #0284c7; color: #ffffff; border-radius: 7px; padding: 4px 10px; font-weight: 600; font-size: 11px; }}
+QPushButton#SlideCapture:hover {{ background: #0ea5e9; }}
+QPushButton#SlideDismiss {{ padding: 0; border-radius: 6px; }}
+QPushButton#SlideDismiss:hover {{ background: rgba(248, 113, 113, 0.18); }}
 QDialogButtonBox QPushButton, QMessageBox QPushButton {{ background: {BG_CARD}; border: 1px solid {BORDER}; padding: 6px 18px; min-width: 70px; }}
 
 QLineEdit {{ background: {BG_CARD}; border: 1px solid {BORDER}; border-radius: 10px; padding: 8px 10px; selection-background-color: #2f4a8f; }}

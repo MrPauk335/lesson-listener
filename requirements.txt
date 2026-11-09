@@ -7,3 +7,4 @@ requests
 proc-tap
 psutil
 PySide6-Essentials
+QtAwesome

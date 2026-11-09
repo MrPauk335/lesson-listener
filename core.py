@@ -10,6 +10,7 @@ import collections
 import csv
 import ctypes
 import datetime
+import html
 import io
 import json
 import logging
@@ -486,7 +487,8 @@ def is_lesson_already_open(meet_url: str = "", subject_id: str = "", subject_nam
         try:
             res = subprocess.run(
                 ["tasklist", "/v", "/fi", f"imagename eq {exe}", "/fo", "csv"],
-                capture_output=True, text=True, errors="ignore", timeout=2
+                capture_output=True, text=True, errors="ignore", timeout=2,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             if not res.stdout:
                 continue
@@ -1089,14 +1091,21 @@ def clean_math(t: str) -> str:
     return t
 
 
+def _inline_html(text: str) -> str:
+    """Екранує HTML (щоб «x < 5» не ламало розмітку) і перетворює **жирний** Markdown на <b>."""
+    t = html.escape(text, quote=False)
+    t = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", t, flags=re.DOTALL)
+    return t.replace("\n", "<br>")
+
+
 def aloud_to_html(text: str) -> str:
     """Генерує стилізований HTML для віджета суфлера з виділенням шпаргалки."""
     cleaned = clean_math(text)
     parts = re.split(r"⚡\s*Шпаргалка\s*:\s*", cleaned, maxsplit=1)
     speech_part = parts[0].strip()
-    cheatsheet_part = parts[1].strip() if len(parts) > 1 else ""
+    cheatsheet_part = _inline_html(parts[1].strip()) if len(parts) > 1 else ""
 
-    speech_html = speech_part.replace("\n", "<br>")
+    speech_html = _inline_html(speech_part)
 
     if cheatsheet_part:
         return (
