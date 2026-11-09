@@ -1,0 +1,42 @@
+plugins {
+    id 'com.android.application'
+}
+
+def studyAssets = layout.buildDirectory.dir('generated/assets/studyData')
+
+android {
+    namespace 'org.lessonlistener.app'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'org.lessonlistener.app'
+        minSdk 26
+        targetSdk 35
+        versionCode 10100
+        versionName '1.1.0-beta.1'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    sourceSets {
+        main.assets.srcDir(studyAssets)
+    }
+}
+
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+}
+
+tasks.register('copyStudyAssets', Copy) {
+    from(rootProject.file('../schedule.json'))
+    from(rootProject.file('../profiles')) {
+        into 'profiles'
+    }
+    into studyAssets
+}
+tasks.named('preBuild').configure {
+    dependsOn('copyStudyAssets')
+}
