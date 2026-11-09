@@ -17,6 +17,7 @@ android {
         targetSdk 35
         versionCode 10100
         versionName '1.1.0-beta.1'
+        testInstrumentationRunner 'org.lessonlistener.app.RequestRaceInstrumentation'
     }
 
     compileOptions {

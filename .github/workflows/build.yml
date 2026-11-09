@@ -82,7 +82,7 @@ jobs:
       - run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
       - name: Android lint and installable preview APK
         working-directory: android
-        run: gradle --no-daemon lintDebug testDebugUnitTest assembleDebug
+        run: gradle --no-daemon lintDebug testDebugUnitTest assembleDebug assembleDebugAndroidTest
       - name: Enable emulator acceleration
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -96,7 +96,7 @@ jobs:
           profile: pixel_2
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          script: python3 scripts/android_smoke.py android/app/build/outputs/apk/debug/app-debug.apk
+          script: python3 scripts/android_smoke.py android/app/build/outputs/apk/debug/app-debug.apk --instrumentation-apk android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
       - uses: actions/upload-artifact@v4
         if: always()
         with:
