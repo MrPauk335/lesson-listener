@@ -12,6 +12,8 @@ try:
 except Exception:  # без QtAwesome працюємо на гліфах Segoe MDL2
     qta = None
 
+_PHOSPHOR_FONT = None
+
 # ---------------------------------------------------------------- палітра
 BG = "#13151b"
 BG_CARD = "#1a1d26"
@@ -153,12 +155,17 @@ def _draw_vector_glyph(p: QPainter, glyph: str, s: float, col: str) -> bool:
 @functools.lru_cache(maxsize=None)
 def glyph_icon(glyph: str, color: str = MUTED_LIGHT, color_on: str = None, size: int = 16) -> QIcon:
     """Іконка (кешується): Phosphor через QtAwesome, інакше векторний рендер або гліф Segoe MDL2."""
+    global _PHOSPHOR_FONT
     name = QTA_ICON.get(glyph) if qta is not None else None
     if name:
         try:
+            if _PHOSPHOR_FONT is None:
+                # Явна директорія не встановлює шрифти глобально у Windows.
+                fonts = os.path.join(os.path.dirname(qta.__file__), "fonts")
+                _PHOSPHOR_FONT = qta.IconicFont(("ph", "phosphor-1.3.0.ttf", "phosphor-charmap-1.3.0.json", fonts))
             on = color_on or color
-            return qta.icon(name, color=color, color_active=color, color_on=on, color_on_active=on,
-                            color_disabled=MUTED)
+            return _PHOSPHOR_FONT.icon(name, color=color, color_active=color, color_on=on,
+                                      color_on_active=on, color_disabled=MUTED)
         except Exception:
             pass
     icon = QIcon()
