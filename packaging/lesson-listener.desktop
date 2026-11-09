@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Lesson Listener
+Comment=Audio, image and text lesson assistant
+Exec=/opt/lesson-listener/LessonListener
+Icon=lesson-listener
+Terminal=false
+Categories=Education;
+StartupWMClass=Lesson Listener
