@@ -49,6 +49,7 @@ def capture(out, name):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('apk')
+    parser.add_argument('--instrumentation-apk')
     parser.add_argument('--out', default='android-evidence')
     args = parser.parse_args()
     out = Path(args.out)
@@ -72,6 +73,13 @@ def main():
     assert_text('Сначала напишите вопрос')
     capture(out, '04-validation')
     print('PASS: install, launch, lesson/settings/notes navigation, empty-question validation')
+    if args.instrumentation_apk:
+        adb('install', '-r', args.instrumentation_apk, timeout=120)
+        result = adb('shell', 'am', 'instrument', '-w',
+                     PACKAGE + '.test/' + PACKAGE + '.RequestRaceInstrumentation', timeout=120).decode()
+        (out / 'request-race.txt').write_text(result, encoding='utf-8')
+        assert 'REQUEST_RACE_PASS' in result, result
+        print('PASS: real activity ignores canceled callbacks during immediate retry')
 
 
 if __name__ == '__main__':

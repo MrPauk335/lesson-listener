@@ -30,6 +30,14 @@ Access to a selected image survives screen rotation. Removing or replacing it, o
 
 Current source builds isolate each AI request: canceling and immediately retrying cannot let an older reply overwrite the new result or clear the new request's audio/network resources.
 
+Run the offline request-cancellation instrumentation check on a connected emulator after installing the debug and instrumentation APKs:
+
+```sh
+adb shell am instrument -w org.lessonlistener.app.test/org.lessonlistener.app.RequestRaceInstrumentation
+```
+
+It exercises stale success and error callbacks using fake request work; it does not contact an AI provider.
+
 ## Android platform limits
 
 This port does not capture audio from other applications or the system mix. Android does not provide this app with the Windows-specific system audio capture, global hotkeys, always-on-top desktop overlay, or Windows startup integration. The app does not attempt to simulate those features.
