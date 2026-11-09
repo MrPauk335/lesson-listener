@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QComboBox, QDialog, Q
 import ui_theme as T
 from core import (ANSWER_MODELS, BG_MODELS, DEFAULT_BELLS, DEFAULT_CONFIG, DEFAULT_TIMETABLE,
                   FALLBACK_CHAIN, GEMINI_ANSWER_MODELS, GROQ_MODELS, HOTKEY, MAX_RING_SECONDS,
-                  OPENROUTER_MODELS, PROVIDERS, TARGET_SR, GeminiEngine, LessonContext, ProfileManager,
+                  OPENROUTER_MODELS, PROVIDERS, TARGET_SR, GeminiEngine, LectureManager, LessonContext, ProfileManager,
                   ScheduleManager, UniversalRecorder, aloud_to_html, audio_to_wav_bytes, clean_math,
                   detect_subject_from_text, detect_subject_from_windows, ensure_start_menu_shortcut,
                   find_chrome_exe, find_school_chrome_profile, get_active_window_title,
@@ -73,6 +73,7 @@ class Bridge(QObject):
     bg_updated = Signal()
     hotkey = Signal()
     snip_hotkey = Signal()
+    slide_detected = Signal(str)
 
 
 class ScreenSnipper(QWidget):
@@ -257,6 +258,8 @@ class FloatingWidget(QWidget):
                                        lambda *_: c.open_current_meet(force=True))
         self.btn_snip = self._icon_btn("camera", "Показати область екрана (задачу / слайд / тест) — F9",
                                        lambda *_: c.start_screen_snip())
+        self.btn_notes = self._icon_btn("education", "Конспект уроку (відкрити записи та збережені слайди)",
+                                        lambda *_: c.open_current_lecture())
         self.btn_recess = self._icon_btn("coffee", "Перерва / Пауза — вимкнути прослуховування на зміні",
                                          lambda *_: c.toggle_recess(), checkable=True)
         self.btn_recess.setObjectName("IconRecess")
@@ -266,13 +269,76 @@ class FloatingWidget(QWidget):
         self.btn_pin.setChecked(bool(c.cfg.get("topmost", True)))
         self.btn_gear = self._icon_btn("gear", "Пам'ять уроку та налаштування", lambda *_: c.open_panel())
         self.btn_hide = self._icon_btn("minimize", "Сховати в трей (Esc)", lambda *_: self.hide_widget())
-        for b in (self.btn_new, self.btn_meet, self.btn_snip, self.btn_recess, self.btn_mini, self.btn_pin, self.btn_gear, self.btn_hide):
+        for b in (self.btn_new, self.btn_meet, self.btn_snip, self.btn_notes, self.btn_recess, self.btn_mini, self.btn_pin, self.btn_gear, self.btn_hide):
             hl.addWidget(b)
         root.addWidget(self.header)
 
         self.lbl_banner = T.ElidedLabel()
         self.lbl_banner.setObjectName("Muted")
         root.addWidget(self.lbl_banner)
+
+        # ---- банер виявлення слайда / дошки на екрані
+        self.slide_bar = QFrame()
+        self.slide_bar.setObjectName("SlideBar")
+        self.slide_bar.setStyleSheet("""
+            QFrame#SlideBar {
+                background: rgba(14, 165, 233, 0.16);
+                border: 1px solid #38bdf8;
+                border-radius: 8px;
+            }
+        """)
+        sbl = QHBoxLayout(self.slide_bar)
+        sbl.setContentsMargins(10, 6, 8, 6)
+        sbl.setSpacing(8)
+
+        self.lbl_slide_icon = QLabel()
+        self.lbl_slide_icon.setPixmap(T.glyph_icon("camera", "#38bdf8", size=15).pixmap(15, 15))
+        sbl.addWidget(self.lbl_slide_icon)
+
+        self.lbl_slide_text = QLabel("Вчитель демонструє слайд / дошку")
+        self.lbl_slide_text.setStyleSheet("color: #f1f5f9; font-size: 11px; font-weight: 500;")
+        self.lbl_slide_text.setWordWrap(True)
+        sbl.addWidget(self.lbl_slide_text, 1)
+
+        self.btn_slide_capture = QPushButton("📸 Скріншот")
+        self.btn_slide_capture.setStyleSheet("""
+            QPushButton {
+                background: #0284c7;
+                color: #ffffff;
+                border: none;
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-weight: 600;
+                font-size: 11px;
+            }
+            QPushButton:hover { background: #0369a1; }
+        """)
+        self.btn_slide_capture.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_slide_capture.clicked.connect(lambda: c.accept_slide_capture())
+        sbl.addWidget(self.btn_slide_capture)
+
+        self.btn_slide_dismiss = QPushButton("✕")
+        self.btn_slide_dismiss.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                color: #94a3b8;
+                border: none;
+                font-size: 13px;
+                padding: 2px 4px;
+            }
+            QPushButton:hover { color: #f87171; }
+        """)
+        self.btn_slide_dismiss.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_slide_dismiss.clicked.connect(lambda: c.dismiss_slide_prompt())
+        sbl.addWidget(self.btn_slide_dismiss)
+
+        self.slide_bar.hide()
+        root.addWidget(self.slide_bar)
+
+        self._slide_timer = QTimer(self)
+        self._slide_timer.setSingleShot(True)
+        self._slide_timer.setInterval(22000)
+        self._slide_timer.timeout.connect(self.hide_slide_prompt)
 
         # ---- картка відповіді
         self.card = QFrame()
@@ -530,6 +596,16 @@ class FloatingWidget(QWidget):
         self.lbl_status.setStyleSheet(f"color:{T.WARN if warn else T.MUTED};")
         self.lbl_status.setFullText(clean)
 
+    def show_slide_prompt(self, desc: str):
+        txt = f"📸 Слайд: {desc}. Зберегти в конспект?" if desc else "📸 Вчитель демонструє слайд. Зберегти в конспект?"
+        self.lbl_slide_text.setText(txt)
+        self.slide_bar.show()
+        self._slide_timer.start()
+
+    def hide_slide_prompt(self):
+        self.slide_bar.hide()
+        self._slide_timer.stop()
+
     def set_level(self, level: int, seconds: float):
         self.level_bar.setValue(level)
         self.lbl_buf.setText(f"{seconds:.0f} с")
@@ -673,6 +749,21 @@ class SettingsPanel(QDialog):
             self.lv[key] = val
         g.setColumnStretch(1, 1)
         v.addWidget(live)
+
+        v.addWidget(self._section("Конспект та записи уроку"))
+        card_notes = self._card()
+        cn_lay = QHBoxLayout(card_notes)
+        cn_lay.setContentsMargins(14, 10, 14, 10)
+        cn_lay.setSpacing(10)
+        btn_open_lec = QPushButton("📄 Відкрити конспект уроку")
+        btn_open_lec.setObjectName("Primary")
+        btn_open_lec.clicked.connect(lambda *_: self.ctrl.open_current_lecture())
+        cn_lay.addWidget(btn_open_lec)
+        btn_open_dir = QPushButton("📁 Папка всіх конспектів (lectures/)")
+        btn_open_dir.setObjectName("Soft")
+        btn_open_dir.clicked.connect(lambda *_: self.ctrl.open_lectures_folder())
+        cn_lay.addWidget(btn_open_dir)
+        v.addWidget(card_notes)
 
         v.addWidget(self._section("Викладач та постійні вимоги"))
         card = self._card()
@@ -1314,7 +1405,13 @@ class LessonListenerApp(QObject):
         self.bridge.bg_updated.connect(self._refresh_live_views)
         self.bridge.hotkey.connect(self.on_trigger_answer)
         self.bridge.snip_hotkey.connect(self.start_screen_snip)
+        self.bridge.slide_detected.connect(self.on_slide_detected)
         self._snipper = None
+
+        self.lecture_mgr = LectureManager()
+        self._last_slide_prompt_time = 0.0
+        self._last_slide_topic = ""
+        self._current_slide_desc = ""
 
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
@@ -1634,6 +1731,11 @@ class LessonListenerApp(QObject):
         self.menu_subj = menu.addMenu("Предмет")
         self.menu_subj.aboutToShow.connect(self._fill_subject_menu)
 
+        act_lecture = menu.addAction("📚 Конспект уроку")
+        act_lecture.triggered.connect(lambda *_: self.open_current_lecture())
+        act_lectures_dir = menu.addAction("📁 Папка конспектів (lectures/)")
+        act_lectures_dir.triggered.connect(lambda *_: self.open_lectures_folder())
+
         act_new = menu.addAction("Новий урок")
         act_new.triggered.connect(lambda *_: self.on_start_new_lesson())
         self.act_top = menu.addAction("Поверх усіх вікон")
@@ -1795,6 +1897,35 @@ class LessonListenerApp(QObject):
                 )
                 self.bridge.bg_updated.emit()
 
+                # Автоматичний запис тез у конспект уроку
+                sub_id = self.active_profile.get("id", "general")
+                sub_name = self.active_profile.get("name", sub_id)
+                teach = self.active_profile.get("teacher_name", "")
+                if analysis.get("summary"):
+                    self.lecture_mgr.log_summary_entry(
+                        sub_id,
+                        analysis["summary"],
+                        terms=analysis.get("key_terms"),
+                        subject_name=sub_name,
+                        teacher_name=teach
+                    )
+
+                # Детекція показу слайда / дошки викладачем (з дебаунсом)
+                if analysis.get("screen_slide_shown") and not self.is_recess:
+                    topic = (analysis.get("slide_topic") or "").strip().lower()
+                    curr_t = time.time()
+                    is_same_topic = bool(topic and topic == self._last_slide_topic)
+                    time_since = curr_t - self._last_slide_prompt_time
+                    if is_same_topic and time_since < 420:
+                        pass  # Той самий слайд — не докучаємо щонайменше 7 хвилин
+                    elif not is_same_topic and time_since < 150:
+                        pass  # Не частіше ніж раз на 2.5 хвилини
+                    else:
+                        self._last_slide_topic = topic
+                        self._last_slide_prompt_time = curr_t
+                        slide_desc = analysis.get("slide_topic") or "Слайд / дошка"
+                        self.bridge.slide_detected.emit(slide_desc)
+
                 # ШІ-детекція перерви та предмета з голосу вчителя
                 if hasattr(self, "schedule_mgr") and self.schedule_mgr.data.get("detect_from_audio", True):
                     if analysis.get("is_recess") is True and not self.is_recess:
@@ -1885,11 +2016,76 @@ class LessonListenerApp(QObject):
                     return
                 logging.info(f"Відповідь Vision отримана за {dt:.2f}с: {(res.get('say_aloud') or '')[:80]}...")
                 self.bridge.answer_ready.emit(res, dt)
+                # Додаємо вирізаний скріншот у конспект
+                try:
+                    s_id = self.active_profile.get("id", "general")
+                    s_nm = self.active_profile.get("name", s_id)
+                    t_nm = self.active_profile.get("teacher_name", "")
+                    self.lecture_mgr.save_slide_screenshot(
+                        subject_id=s_id,
+                        img_bytes_or_pixmap=img_bytes,
+                        description=f"Завдання з екрана (F9): {res.get('question', '')}",
+                        subject_name=s_nm,
+                        teacher_name=t_nm
+                    )
+                except Exception as le:
+                    logging.warning(f"Не вдалося додати скріншот у конспект: {le}")
             except Exception as e:
                 logging.error(f"Збій у vision worker: {e}", exc_info=True)
                 self.bridge.worker_error.emit(str(e))
 
         threading.Thread(target=_worker, daemon=True).start()
+
+    def on_slide_detected(self, desc: str):
+        if self.is_recess:
+            return
+        self._current_slide_desc = desc
+        self.widget.show_slide_prompt(desc)
+
+    def accept_slide_capture(self):
+        """Користувач дозволив скріншот: ховаємо плашку, приховуємо вікно на 140мс, зберігаємо в конспект."""
+        self.widget.hide_slide_prompt()
+        desc = self._current_slide_desc or "Слайд презентації / дошка"
+        sub_id = self.active_profile.get("id", "general")
+        sub_name = self.active_profile.get("name", sub_id)
+        teacher = self.active_profile.get("teacher_name", "")
+
+        self.widget.hide()
+        QApplication.processEvents()
+
+        def _do_grab():
+            try:
+                screen = QGuiApplication.primaryScreen()
+                pm = screen.grabWindow(0)
+                saved = self.lecture_mgr.save_slide_screenshot(
+                    subject_id=sub_id,
+                    img_bytes_or_pixmap=pm,
+                    description=desc,
+                    subject_name=sub_name,
+                    teacher_name=teacher
+                )
+                logging.info(f"Скріншот дошки збережено: {saved}")
+            except Exception as e:
+                logging.error(f"Помилка створення скріншота дошки: {e}")
+            finally:
+                self.widget.show()
+                self.set_status("📸 Скріншот додано в конспект уроку!")
+
+        QTimer.singleShot(140, _do_grab)
+
+    def dismiss_slide_prompt(self):
+        """Користувач відхилив скріншот: ховаємо плашку і не турбуємо до наступного слайда."""
+        self.widget.hide_slide_prompt()
+        self._last_slide_prompt_time = time.time()
+
+    def open_current_lecture(self):
+        sub_id = self.active_profile.get("id", "general")
+        sub_name = self.active_profile.get("name", sub_id)
+        teacher = self.active_profile.get("teacher_name", "")
+        self.lecture_mgr.open_lecture(sub_id, sub_name, teacher)
+
+    def open_lectures_folder(self):
+        self.lecture_mgr.open_lectures_folder()
 
     def on_trigger_answer(self):
         if self.is_recess:
@@ -1962,6 +2158,22 @@ class LessonListenerApp(QObject):
         terms = res.get("terms", "")
 
         self.context.register_qa(q, aloud)
+        # Запис у конспект уроку
+        try:
+            sub_id = self.active_profile.get("id", "general")
+            sub_name = self.active_profile.get("name", sub_id)
+            teacher = self.active_profile.get("teacher_name", "")
+            self.lecture_mgr.log_qa_entry(
+                subject_id=sub_id,
+                question=q,
+                answer=aloud,
+                who=who,
+                explanation=deep,
+                subject_name=sub_name,
+                teacher_name=teacher
+            )
+        except Exception as e:
+            logging.warning(f"Не вдалося записати Q&A в конспект: {e}")
         details = ""
         if dlg:
             details += f"ХІД ОПИТУВАННЯ В КЛАСІ:\n{dlg}\n\n"

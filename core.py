@@ -849,6 +849,124 @@ class ScheduleManager:
         return {"enabled": True, "is_recess": False, "status_text": ""}
 
 
+class LectureManager:
+    """Менеджер конспектів уроків: автоматично зберігає хроніку, тези, Q&A та скріншоти дошки."""
+
+    def __init__(self, base_dir: str = "lectures"):
+        self.base_dir = base_dir
+        self.screenshots_dir = os.path.join(base_dir, "screenshots")
+        os.makedirs(self.screenshots_dir, exist_ok=True)
+        self._logged_summaries = set()
+
+    def get_lecture_path(self, subject_id: str) -> str:
+        today = datetime.date.today().strftime("%Y-%m-%d")
+        sid = (subject_id or "general").strip()
+        return os.path.join(self.base_dir, f"{today}_{sid}.md")
+
+    def _ensure_header(self, subject_id: str, subject_name: str = "", teacher_name: str = ""):
+        path = self.get_lecture_path(subject_id)
+        if not os.path.exists(path) or os.path.getsize(path) == 0:
+            now_str = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
+            sname = subject_name or subject_id or "Урок"
+            header = (
+                f"# 📚 Конспект уроку: {sname}\n\n"
+                f"- **Дата та початок:** {now_str}\n"
+                f"- **Викладач:** {teacher_name or '—'}\n\n"
+                f"---\n\n"
+                f"## 📝 Хроніка та тези уроку\n\n"
+            )
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(header)
+            except Exception as e:
+                logging.error(f"Не вдалося створити файл конспекту: {e}")
+
+    def log_summary_entry(self, subject_id: str, summary: str, terms: list = None,
+                          subject_name: str = "", teacher_name: str = ""):
+        if not summary or summary in self._logged_summaries:
+            return
+        self._logged_summaries.add(summary)
+        self._ensure_header(subject_id, subject_name, teacher_name)
+        time_str = datetime.datetime.now().strftime("%H:%M")
+        terms_txt = f" *(Ключові терміни: {', '.join(terms)})*" if terms else ""
+        entry = f"- **{time_str}** — {summary}{terms_txt}\n"
+        path = self.get_lecture_path(subject_id)
+        try:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(entry)
+        except Exception as e:
+            logging.error(f"Не вдалося записати тезу в конспект: {e}")
+
+    def log_qa_entry(self, subject_id: str, question: str, answer: str, who: str = "",
+                     explanation: str = "", subject_name: str = "", teacher_name: str = ""):
+        if not question and not answer:
+            return
+        self._ensure_header(subject_id, subject_name, teacher_name)
+        time_str = datetime.datetime.now().strftime("%H:%M")
+        who_txt = f" ({who})" if who else ""
+        entry = (
+            f"\n### 💡 Запитання уроку [{time_str}]:\n"
+            f"> **Питання{who_txt}:** {question}\n\n"
+            f"> **Відповідь:** {answer}\n"
+        )
+        if explanation:
+            entry += f"\n*Пояснення / розрахунок:*\n{explanation}\n"
+        entry += "\n"
+        path = self.get_lecture_path(subject_id)
+        try:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(entry)
+        except Exception as e:
+            logging.error(f"Не вдалося записати Q&A в конспект: {e}")
+
+    def save_slide_screenshot(self, subject_id: str, img_bytes_or_pixmap, description: str = "",
+                              subject_name: str = "", teacher_name: str = "") -> str:
+        self._ensure_header(subject_id, subject_name, teacher_name)
+        now = datetime.datetime.now()
+        timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
+        time_str = now.strftime("%H:%M")
+        sid = (subject_id or "general").strip()
+        filename = f"{timestamp}_{sid}.jpg"
+        full_path = os.path.join(self.screenshots_dir, filename)
+
+        try:
+            if isinstance(img_bytes_or_pixmap, (bytes, bytearray)):
+                with open(full_path, "wb") as f:
+                    f.write(img_bytes_or_pixmap)
+            else:
+                img_bytes_or_pixmap.save(full_path, "JPEG", 90)
+        except Exception as e:
+            logging.error(f"Не вдалося зберегти файл скріншота: {e}")
+            return ""
+
+        desc = (description or "").strip() or "Матеріал з екрана / слайд"
+        entry = (
+            f"\n### 📸 Скріншот матеріалу / дошки [{time_str}]:\n"
+            f"> *{desc}*\n\n"
+            f"![{desc}](screenshots/{filename})\n\n"
+        )
+        path = self.get_lecture_path(subject_id)
+        try:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(entry)
+        except Exception as e:
+            logging.error(f"Не вдалося додати скріншот у конспект: {e}")
+        return full_path
+
+    def open_lecture(self, subject_id: str, subject_name: str = "", teacher_name: str = "") -> str:
+        self._ensure_header(subject_id, subject_name, teacher_name)
+        path = os.path.abspath(self.get_lecture_path(subject_id))
+        if sys.platform == "win32" and os.path.exists(path):
+            os.startfile(path)
+        return path
+
+    def open_lectures_folder(self) -> str:
+        path = os.path.abspath(self.base_dir)
+        if sys.platform == "win32" and os.path.exists(path):
+            os.startfile(path)
+        return path
+
+
 def preprocess_audio(audio_np: np.ndarray, sample_rate: int = TARGET_SR) -> np.ndarray:
     """Розумне очищення аудіо перед відправкою:
     - прибирає DC-зміщення;
@@ -1802,12 +1920,16 @@ class GeminiEngine:
             '  "key_terms": ["термін1", "термін2"],\n'
             '  "summary": "1 речення: що пояснювали в цьому фрагменті",\n'
             '  "is_recess": false,\n'
-            '  "detected_subject": "algebra"\n'
+            '  "detected_subject": "algebra",\n'
+            '  "screen_slide_shown": false,\n'
+            '  "slide_topic": "формула або креслення на слайді"\n'
             "}\n"
             "ПРАВИЛА РОЗПІЗНАВАННЯ:\n"
             "- КАТЕГОРИЧНО ІГНОРУЙ сторонні розмови друзів із Discord / ігор. Аналізуй ТІЛЬКИ мову викладача уроку.\n"
             "- is_recess: true, якщо вчитель оголосив перерву, завершив урок, відпустив учнів, або чути шкільний дзвінок чи розмови на перерві. Якщо йде пояснення уроку — false.\n"
-            "- detected_subject: id предмета (algebra, geometry, physics, chemistry, biology, history, english, ukr_lang, informatics), якщо за темою чи словами вчителя чітко зрозуміло предмет, інакше null."
+            "- detected_subject: id предмета (algebra, geometry, physics, chemistry, biology, history, english, ukr_lang, informatics), якщо за темою чи словами вчителя чітко зрозуміло предмет, інакше null.\n"
+            "- screen_slide_shown: true, якщо вчитель явно звертає увагу учнів на екран, дошку, презентацію чи слайд («подивіться на екран», «на слайді», «перепишіть з дошки», «ось формула на екрані», «увага на презентацію», «посмотрите на доску», «откройте этот слайд»). Якщо показу слайда/дошки немає — false.\n"
+            "- slide_topic: коротко (2-5 слів), що саме демонструють на екрані чи дошці."
         )
 
         if self.cfg.get("gemini_api_key"):
