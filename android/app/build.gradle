@@ -1,0 +1,70 @@
+import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
+
+plugins {
+    id 'com.android.application'
+}
+
+def studyAssets = layout.buildDirectory.dir('generated/assets/studyData')
+
+android {
+    namespace 'org.lessonlistener.app'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'org.lessonlistener.app'
+        minSdk 26
+        targetSdk 35
+        versionCode 10100
+        versionName '1.1.0-beta.1'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    sourceSets {
+        main.assets.srcDir(studyAssets)
+    }
+}
+
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+}
+
+tasks.register('copyStudyAssets') {
+    def scheduleFile = rootProject.file('../schedule.json')
+    def profilesDirectory = rootProject.file('../profiles')
+    inputs.file(scheduleFile)
+    inputs.dir(profilesDirectory)
+    outputs.dir(studyAssets)
+
+    doLast {
+        File outputDirectory = studyAssets.get().asFile
+        outputDirectory.deleteDir()
+        File outputProfiles = new File(outputDirectory, 'profiles')
+        outputProfiles.mkdirs()
+
+        profilesDirectory.eachFileMatch(~/.*\.json/) { File source ->
+            def profile = new JsonSlurper().parse(source)
+            def safeProfile = [
+                id: profile.id?.toString() ?: source.name.replaceFirst(/\.json$/, ''),
+                name: profile.name?.toString() ?: source.name.replaceFirst(/\.json$/, ''),
+                teacher_name: '',
+                teacher_style: '',
+                permanent_rules: [],
+                cumulative_terms: [],
+                past_lessons: [],
+                meet_url: ''
+            ]
+            new File(outputProfiles, source.name).setText(
+                JsonOutput.prettyPrint(JsonOutput.toJson(safeProfile)) + '\n', 'UTF-8')
+        }
+
+        new File(outputDirectory, 'schedule.json').bytes = scheduleFile.bytes
+    }
+}
+tasks.named('preBuild').configure {
+    dependsOn('copyStudyAssets')
+}
