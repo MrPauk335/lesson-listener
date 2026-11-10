@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import wave
@@ -222,11 +223,30 @@ def load_config():
     return cfg
 
 
+_JSON_SAVE_LOCK = threading.RLock()
+
+
+def _write_json_atomically(path, value):
+    """Не пошкоджує попередній файл, якщо серіалізація або запис не вдалися."""
+    path = os.path.abspath(path)
+    directory = os.path.dirname(path)
+    with _JSON_SAVE_LOCK:
+        os.makedirs(directory, exist_ok=True)
+        fd, temporary_path = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", suffix=".tmp", dir=directory)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(value, stream, ensure_ascii=False, indent=2)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary_path, path)
+        finally:
+            if os.path.exists(temporary_path):
+                os.unlink(temporary_path)
+
+
 def save_config(cfg):
     try:
-        os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, ensure_ascii=False, indent=2)
+        _write_json_atomically(CONFIG_FILE, cfg)
     except Exception as e:
         logging.error(f"Помилка збереження config.json: {e}")
 
@@ -856,9 +876,7 @@ class ScheduleManager:
         if data is not None:
             self.data = data
         try:
-            os.makedirs(os.path.dirname(os.path.abspath(self.file_path)), exist_ok=True)
-            with open(self.file_path, "w", encoding="utf-8") as f:
-                json.dump(self.data, f, ensure_ascii=False, indent=2)
+            _write_json_atomically(self.file_path, self.data)
         except Exception as e:
             logging.error(f"Помилка збереження schedule.json: {e}")
 
@@ -1367,8 +1385,7 @@ class ProfileManager:
         self.profiles[sub_id] = profile
         fp = os.path.join(PROFILES_DIR, f"{sub_id}.json")
         try:
-            with open(fp, "w", encoding="utf-8") as f:
-                json.dump(profile, f, ensure_ascii=False, indent=2)
+            _write_json_atomically(fp, profile)
         except Exception as e:
             logging.error(f"Помилка збереження профілю {sub_id}: {e}")
 

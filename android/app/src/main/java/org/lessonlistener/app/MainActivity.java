@@ -7,6 +7,7 @@ import android.content.ClipboardManager;
 import android.content.ContentResolver;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.UriPermission;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -130,10 +131,9 @@ public final class MainActivity extends Activity {
     private boolean showSchedule;
     private long recordingStartedAt;
     private File audioFile;
-    private volatile File inFlightAudioFile;
     private MediaRecorder recorder;
+    private final RequestGate requestGate = new RequestGate();
     private Future<?> activeTask;
-    private volatile HttpURLConnection activeConnection;
     private Runnable recordingTicker;
 
     @Override
@@ -157,6 +157,7 @@ public final class MainActivity extends Activity {
                 statusText = "Запрос отменён при повороте экрана. Черновик сохранён — отправьте его ещё раз.";
             }
         }
+        releaseUnusedImagePermissions();
         loadBundledData();
         if (!profiles.containsKey(activeSubject) && !profiles.isEmpty()) {
             activeSubject = profiles.keySet().iterator().next();
@@ -388,6 +389,7 @@ public final class MainActivity extends Activity {
             Button clearPhoto = button("Убрать фото", false);
             clearPhoto.setOnClickListener(v -> {
                 selectedImage = null;
+                releaseUnusedImagePermissions();
                 imageName = "";
                 renderCurrentTab();
             });
@@ -759,7 +761,7 @@ public final class MainActivity extends Activity {
         final String prompt = studyPrompt(question, false, false);
         final String provider = activeProvider;
         final String model = modelFor(provider);
-        runRequest("Готовлю пояснение…", () -> sendTextRequest(provider, model, prompt));
+        runRequest("Готовлю пояснение…", request -> sendTextRequest(request, provider, model, prompt));
     }
 
     private boolean ensureConfigured() {
@@ -775,8 +777,14 @@ public final class MainActivity extends Activity {
         return true;
     }
 
-    private void runRequest(String message, RequestWork work) {
-        if (busy || destroyed) return;
+    private boolean runRequest(String message, RequestWork work) {
+        return runRequest(message, null, work);
+    }
+
+    private boolean runRequest(String message, File requestAudioFile, RequestWork work) {
+        if (busy || destroyed) return false;
+        final RequestGate.Request request = requestGate.begin();
+        if (requestAudioFile != null) requestGate.setAudioFile(request, requestAudioFile);
         busy = true;
         setStatus(message, ACCENT);
         renderCurrentTab();
@@ -785,39 +793,44 @@ public final class MainActivity extends Activity {
         final String requestSubject = activeSubject;
         activeTask = networkExecutor.submit(() -> {
             try {
-                String result = work.run();
-                if (Thread.currentThread().isInterrupted()) return;
+                String result = work.run(request);
+                if (Thread.currentThread().isInterrupted() || !requestGate.isActive(request)) return;
                 mainHandler.post(() -> {
                     if (destroyed) return;
-                    busy = false;
-                    activeTask = null;
-                    answer = result == null || result.trim().isEmpty() ? "Провайдер вернул пустой ответ. Попробуйте ещё раз." : result.trim();
-                    answerQuestion = requestQuestion;
-                    answerSubject = requestSubject;
-                    prefs.edit().putString("last_answer", answer).putString("last_question", answerQuestion)
-                            .putString("last_answer_subject", answerSubject).apply();
-                    setStatus("Ответ готов · " + providerName(requestProvider), ACCENT);
-                    renderCurrentTab();
+                    requestGate.complete(request, () -> {
+                        busy = false;
+                        activeTask = null;
+                        answer = result == null || result.trim().isEmpty() ? "Провайдер вернул пустой ответ. Попробуйте ещё раз." : result.trim();
+                        answerQuestion = requestQuestion;
+                        answerSubject = requestSubject;
+                        prefs.edit().putString("last_answer", answer).putString("last_question", answerQuestion)
+                                .putString("last_answer_subject", answerSubject).apply();
+                        setStatus("Ответ готов · " + providerName(requestProvider), ACCENT);
+                        renderCurrentTab();
+                    });
                 });
             } catch (Exception error) {
-                if (Thread.currentThread().isInterrupted()) return;
+                if (Thread.currentThread().isInterrupted() || !requestGate.isActive(request)) return;
                 String friendly = friendlyError(error);
                 mainHandler.post(() -> {
                     if (destroyed) return;
-                    busy = false;
-                    activeTask = null;
-                    setStatus(friendly, DANGER);
-                    renderCurrentTab();
+                    requestGate.complete(request, () -> {
+                        busy = false;
+                        activeTask = null;
+                        setStatus(friendly, DANGER);
+                        renderCurrentTab();
+                    });
                 });
             }
         });
+        return true;
     }
 
-    private interface RequestWork { String run() throws Exception; }
+    private interface RequestWork { String run(RequestGate.Request request) throws Exception; }
 
-    private String sendTextRequest(String provider, String model, String prompt) throws Exception {
-        if ("gemini".equals(provider)) return callGemini(model, prompt, null, "");
-        return callChatCompletion(provider, model, prompt, null);
+    private String sendTextRequest(RequestGate.Request request, String provider, String model, String prompt) throws Exception {
+        if ("gemini".equals(provider)) return callGemini(request, model, prompt, null, "");
+        return callChatCompletion(request, provider, model, prompt, null);
     }
 
     private void chooseImage() {
@@ -855,10 +868,10 @@ public final class MainActivity extends Activity {
         final String prompt = studyPrompt(questionDraft, true, false);
         final String provider = activeProvider;
         final String model = modelFor(provider);
-        runRequest("Подготавливаю фото задания…", () -> {
+        runRequest("Подготавливаю фото задания…", request -> {
             byte[] bytes = readAndResizeImage(image);
-            if ("gemini".equals(provider)) return callGemini(model, prompt, bytes, "image/jpeg");
-            return callChatCompletion(provider, model, prompt, bytes);
+            if ("gemini".equals(provider)) return callGemini(request, model, prompt, bytes, "image/jpeg");
+            return callChatCompletion(request, provider, model, prompt, bytes);
         });
     }
 
@@ -982,17 +995,17 @@ public final class MainActivity extends Activity {
         String prompt = studyPrompt(questionDraft, false, true);
         String model = modelFor("gemini");
         File captured = audioFile;
-        inFlightAudioFile = captured;
-        runRequest("Обрабатываю запись через Gemini…", () -> {
+        boolean submitted = runRequest("Обрабатываю запись через Gemini…", captured, request -> {
             try {
                 byte[] bytes = readLimitedFile(captured, MAX_AUDIO_SECONDS * 128 * 1024);
-                return callGemini(model, prompt, bytes, "audio/mp4");
+                return callGemini(request, model, prompt, bytes, "audio/mp4");
             } finally {
                 captured.delete();
-                if (inFlightAudioFile == captured) inFlightAudioFile = null;
+                requestGate.clearAudioFile(request, captured);
             }
         });
-        audioFile = null;
+        if (submitted) audioFile = null;
+        else deleteAudio();
     }
 
     private byte[] readLimitedFile(File file, int limit) throws IOException, ApiException {
@@ -1021,7 +1034,7 @@ public final class MainActivity extends Activity {
         audioFile = null;
     }
 
-    private String callGemini(String model, String prompt, byte[] media, String mimeType) throws Exception {
+    private String callGemini(RequestGate.Request request, String model, String prompt, byte[] media, String mimeType) throws Exception {
         String key = prefs.getString(keyPreference("gemini"), "");
         if (key.isEmpty()) throw new ApiException("Добавьте API-ключ Gemini в настройках.");
         JSONObject payload = new JSONObject();
@@ -1038,7 +1051,7 @@ public final class MainActivity extends Activity {
         payload.put("contents", new JSONArray().put(new JSONObject().put("parts", parts)));
         payload.put("generationConfig", new JSONObject().put("temperature", 0.2).put("maxOutputTokens", 1800));
         String url = "https://generativelanguage.googleapis.com/v1beta/models/" + Uri.encode(model) + ":generateContent";
-        JSONObject response = postJson(url, StudySupport.geminiHeaders(key), payload);
+        JSONObject response = postJson(request, url, StudySupport.geminiHeaders(key), payload);
         JSONArray candidates = response.optJSONArray("candidates");
         if (candidates == null || candidates.length() == 0) throw new ApiException("Gemini не вернул ответ. Проверьте модель и формат задания.");
         JSONObject content = candidates.optJSONObject(0).optJSONObject("content");
@@ -1057,7 +1070,7 @@ public final class MainActivity extends Activity {
         return answerText.toString();
     }
 
-    private String callChatCompletion(String provider, String model, String prompt, byte[] image) throws Exception {
+    private String callChatCompletion(RequestGate.Request request, String provider, String model, String prompt, byte[] image) throws Exception {
         String key = prefs.getString(keyPreference(provider), "");
         if (key.isEmpty()) throw new ApiException("Добавьте API-ключ " + providerName(provider) + " в настройках.");
         if (image != null && "groq".equals(provider)) throw new ApiException("Groq не поддерживает изображения в этой версии. Выберите Gemini или OpenRouter.");
@@ -1082,7 +1095,7 @@ public final class MainActivity extends Activity {
             headers.put("HTTP-Referer", "https://lesson-listener.local");
             headers.put("X-Title", "Lesson Listener Android");
         }
-        JSONObject response = postJson(url, headers, payload);
+        JSONObject response = postJson(request, url, headers, payload);
         JSONArray choices = response.optJSONArray("choices");
         JSONObject choice = choices == null ? null : choices.optJSONObject(0);
         JSONObject messageResult = choice == null ? null : choice.optJSONObject("message");
@@ -1091,10 +1104,13 @@ public final class MainActivity extends Activity {
         return content;
     }
 
-    private JSONObject postJson(String endpoint, Map<String, String> headers, JSONObject payload) throws Exception {
-        checkCancelled();
+    private JSONObject postJson(RequestGate.Request request, String endpoint, Map<String, String> headers, JSONObject payload) throws Exception {
+        checkCancelled(request);
         HttpURLConnection connection = (HttpURLConnection) new URL(endpoint).openConnection();
-        activeConnection = connection;
+        if (!requestGate.setConnection(request, connection)) {
+            connection.disconnect();
+            throw new InterruptedException("cancelled");
+        }
         try {
             connection.setRequestMethod("POST");
             connection.setConnectTimeout(15000);
@@ -1106,11 +1122,11 @@ public final class MainActivity extends Activity {
             if (body.length > MAX_REQUEST_BYTES) throw new ApiException("Запрос слишком большой. Уменьшите изображение или контекст урока.");
             connection.setFixedLengthStreamingMode(body.length);
             try (OutputStream output = connection.getOutputStream()) { output.write(body); }
-            checkCancelled();
+            checkCancelled(request);
             int status = connection.getResponseCode();
             InputStream stream = status >= 400 ? connection.getErrorStream() : connection.getInputStream();
             String responseText = stream == null ? "{}" : readResponse(stream);
-            checkCancelled();
+            checkCancelled(request);
             if (status < 200 || status >= 300) throw new ApiException(httpError(status));
             try { return new JSONObject(responseText); }
             catch (JSONException e) { throw new ApiException("Провайдер вернул неожиданный ответ. Попробуйте ещё раз."); }
@@ -1118,7 +1134,7 @@ public final class MainActivity extends Activity {
             throw new ApiException("Истекло время ожидания ответа. Проверьте интернет и повторите запрос.");
         } finally {
             connection.disconnect();
-            if (activeConnection == connection) activeConnection = null;
+            requestGate.clearConnection(request, connection);
         }
     }
 
@@ -1138,8 +1154,10 @@ public final class MainActivity extends Activity {
         return StudySupport.responseError(status);
     }
 
-    private void checkCancelled() throws InterruptedException {
-        if (Thread.currentThread().isInterrupted()) throw new InterruptedException("cancelled");
+    private void checkCancelled(RequestGate.Request request) throws InterruptedException {
+        if (Thread.currentThread().isInterrupted() || !requestGate.isActive(request)) {
+            throw new InterruptedException("cancelled");
+        }
     }
 
     private String friendlyError(Exception error) {
@@ -1154,15 +1172,15 @@ public final class MainActivity extends Activity {
     }
 
     private void cancelRequest() {
+        RequestGate.Resources resources = requestGate.cancel();
         Future<?> task = activeTask;
         if (task != null) task.cancel(true);
-        HttpURLConnection connection = activeConnection;
+        HttpURLConnection connection = (HttpURLConnection) resources.connection();
         if (connection != null) connection.disconnect();
         activeTask = null;
         busy = false;
-        File pendingAudio = inFlightAudioFile;
+        File pendingAudio = (File) resources.audioFile();
         if (pendingAudio != null) pendingAudio.delete();
-        inFlightAudioFile = null;
         setStatus("Запрос отменён.", MUTED);
         renderCurrentTab();
     }
@@ -1253,6 +1271,7 @@ public final class MainActivity extends Activity {
             try {
                 getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
             } catch (SecurityException ignored) { }
+            releaseUnusedImagePermissions();
             imageName = queryDisplayName(uri);
             renderCurrentTab();
         } else if (requestCode == REQ_EXPORT) {
@@ -1263,6 +1282,18 @@ public final class MainActivity extends Activity {
                 Toast.makeText(this, "Экспорт завершён", Toast.LENGTH_SHORT).show();
             } catch (Exception e) {
                 setStatus("Не удалось сохранить файл. Выберите другое место.", DANGER);
+            }
+        }
+    }
+
+    private void releaseUnusedImagePermissions() {
+        String keep = selectedImage == null ? null : selectedImage.toString();
+        for (UriPermission permission : getContentResolver().getPersistedUriPermissions()) {
+            if (StudySupport.shouldReleaseImagePermission(permission.getUri().toString(), keep)) {
+                try {
+                    getContentResolver().releasePersistableUriPermission(
+                            permission.getUri(), Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                } catch (SecurityException ignored) { }
             }
         }
     }
@@ -1442,13 +1473,17 @@ public final class MainActivity extends Activity {
         }
         releaseRecorder();
         deleteAudio();
-        File pendingAudio = inFlightAudioFile;
+        RequestGate.Resources resources = requestGate.cancel();
+        File pendingAudio = (File) resources.audioFile();
         if (pendingAudio != null) pendingAudio.delete();
-        inFlightAudioFile = null;
         if (activeTask != null) activeTask.cancel(true);
-        HttpURLConnection connection = activeConnection;
+        HttpURLConnection connection = (HttpURLConnection) resources.connection();
         if (connection != null) connection.disconnect();
         networkExecutor.shutdownNow();
+        if (isFinishing()) {
+            selectedImage = null;
+            releaseUnusedImagePermissions();
+        }
         super.onDestroy();
     }
 

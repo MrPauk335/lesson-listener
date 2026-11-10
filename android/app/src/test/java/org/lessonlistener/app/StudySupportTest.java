@@ -10,6 +10,18 @@ import java.util.Map;
 
 public final class StudySupportTest {
     @Test
+    public void releasesImageAccessWhenSelectionIsCleared() {
+        assertTrue(StudySupport.shouldReleaseImagePermission("content://images/old", null));
+    }
+
+    @Test
+    public void releasesOnlyOldImageAccessWhenSelectionChanges() {
+        assertTrue(StudySupport.shouldReleaseImagePermission("content://images/old", "content://images/new"));
+        org.junit.Assert.assertFalse(StudySupport.shouldReleaseImagePermission(
+                "content://images/new", "content://images/new"));
+    }
+
+    @Test
     public void defaultsUseSupportedStudyModels() {
         assertEquals("gemini-3.5-flash-lite", StudySupport.defaultModel("gemini"));
         assertEquals("google/gemma-4-31b-it:free", StudySupport.defaultModel("openrouter"));

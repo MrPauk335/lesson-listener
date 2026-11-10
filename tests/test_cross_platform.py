@@ -280,6 +280,67 @@ with tempfile.TemporaryDirectory(prefix="lesson-listener-frozen-") as root, cont
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
 
+class AtomicPersistenceTests(unittest.TestCase):
+    def test_successful_save_replaces_json_and_preserves_unicode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "nested" / "config.json"
+            core._write_json_atomically(target, {"subject": "Алгебра"})
+            core._write_json_atomically(target, {"subject": "Фізика"})
+            self.assertEqual(json.loads(target.read_text(encoding="utf-8")), {"subject": "Фізика"})
+            self.assertEqual(list(target.parent.iterdir()), [target])
+            if os.name != "nt":
+                self.assertEqual(target.stat().st_mode & 0o077, 0)
+
+    def test_serialization_failure_keeps_existing_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "profile.json"
+            target.write_bytes(b'{"original":true}')
+            with self.assertRaises(TypeError):
+                core._write_json_atomically(target, {"invalid": object()})
+            self.assertEqual(target.read_bytes(), b'{"original":true}')
+            self.assertEqual(list(target.parent.iterdir()), [target])
+
+    def test_disk_flush_failure_keeps_existing_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "config.json"
+            target.write_bytes(b'{"original":true}')
+            with mock.patch.object(core.os, "fsync", side_effect=OSError("disk full")):
+                with self.assertRaises(OSError):
+                    core._write_json_atomically(target, {"replacement": True})
+            self.assertEqual(target.read_bytes(), b'{"original":true}')
+            self.assertEqual(list(target.parent.iterdir()), [target])
+
+    def test_first_failed_save_leaves_no_partial_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "config.json"
+            with mock.patch.object(core.os, "replace", side_effect=PermissionError("read-only")):
+                with self.assertRaises(PermissionError):
+                    core._write_json_atomically(target, {"replacement": True})
+            self.assertEqual(list(target.parent.iterdir()), [])
+
+    def test_all_json_save_paths_keep_previous_data_on_replace_failure(self):
+        for kind in ("config", "schedule", "profile"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                target = Path(directory) / ("algebra.json" if kind == "profile" else f"{kind}.json")
+                original = b'{"id":"algebra","name":"Original","enabled":false}'
+                target.write_bytes(original)
+                with mock.patch.object(core, "CONFIG_FILE", str(target)), mock.patch.object(
+                    core, "PROFILES_DIR", directory
+                ), mock.patch.object(core.os, "replace", side_effect=OSError("replace failed")), self.assertLogs(
+                    level="ERROR"
+                ):
+                    if kind == "config":
+                        core.save_config({"replacement": True})
+                    elif kind == "schedule":
+                        manager = core.ScheduleManager(str(target))
+                        manager.data["enabled"] = True
+                        manager.save()
+                    else:
+                        core.ProfileManager().save({"id": "algebra", "name": "Replacement"})
+                self.assertEqual(target.read_bytes(), original)
+                self.assertEqual(list(target.parent.iterdir()), [target])
+
+
 class DesktopReleaseTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

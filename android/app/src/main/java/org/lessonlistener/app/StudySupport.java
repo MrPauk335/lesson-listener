@@ -11,6 +11,10 @@ final class StudySupport {
 
     private StudySupport() { }
 
+    static boolean shouldReleaseImagePermission(String grantedUri, String selectedUri) {
+        return !grantedUri.equals(selectedUri);
+    }
+
     static String defaultModel(String provider) {
         if ("openrouter".equals(provider)) return "google/gemma-4-31b-it:free";
         if ("groq".equals(provider)) return "llama-3.3-70b-versatile";
