@@ -430,10 +430,10 @@ class FloatingWidget(QWidget):
         ql.setContentsMargins(0, 0, 0, 0)
         ql.setSpacing(6)
         self.ent_quick = QLineEdit()
-        self.ent_quick.setPlaceholderText("Або напиши питання й натисни Enter…")
+        self.ent_quick.setPlaceholderText("Запитай мене («що робити?», «зроби завдання») або введи питання…")
         self.ent_quick.returnPressed.connect(self._send_quick)
         ql.addWidget(self.ent_quick, 1)
-        self.btn_send = self._icon_btn("forward", "Відповісти на текстове питання", lambda *_: self._send_quick())
+        self.btn_send = self._icon_btn("forward", "Запитати помічника / відповісти (Enter)", lambda *_: self._send_quick())
         ql.addWidget(self.btn_send)
         root.addWidget(self.quick_row)
 
@@ -612,7 +612,9 @@ class FloatingWidget(QWidget):
 
     def _send_quick(self):
         text = self.ent_quick.text().strip()
-        if text and self.ctrl.on_quick_text_answer(text):
+        if not text:
+            text = "Що зараз треба робити на уроці і які завдання дав вчитель?"
+        if self.ctrl.on_quick_text_answer(text):
             self.ent_quick.clear()
 
     def _copy_clicked(self):
@@ -700,7 +702,11 @@ class FloatingWidget(QWidget):
     def set_answer(self, question, who, aloud, details, dt):
         self._has_active_answer = True
         self._recess_html = None
-        self.lbl_question.setText(f"{question}  ·  {who}" if who else (question or "—"))
+        q_clean = question or "—"
+        if any(marker in q_clean.lower() for marker in ["запит учня", "запрос ученика", "що робити", "что делать", "зроби", "сделай", "допоможи"]):
+            self.lbl_question.setText(f"🎯 {q_clean}")
+        else:
+            self.lbl_question.setText(f"{q_clean}  ·  {who}" if who else q_clean)
         self._raw_aloud = clean_math(aloud)
         self.txt_aloud.setHtml(aloud_to_html(aloud))
         self.txt_deep.setPlainText(clean_math(details or aloud))
